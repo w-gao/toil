@@ -1,6 +1,8 @@
 import os
 import shutil
 import subprocess
+import tempfile
+from typing import List
 import unittest
 import uuid
 import zipfile
@@ -29,14 +31,22 @@ from toil.wdl.wdl_functions import (abspath_file,
 class ToilWdlIntegrationTest(ToilTest):
     """A set of test cases for toilwdl.py"""
 
-    def setUp(self):
+    gatk_data: str
+    gatk_data_dir: str
+    encode_data: str
+    encode_data_dir: str
+    wdl_data: str
+    wdl_data_dir: str
+
+    def setUp(self) -> None:
         """Runs anew before each test to create farm fresh temp dirs."""
         self.output_dir = os.path.join('/tmp/', 'toil-wdl-test-' + str(uuid.uuid4()))
         os.makedirs(self.output_dir)
 
     @classmethod
-    def setUpClass(cls):
+    def setUpClass(cls) -> None:
         """Runs once for all tests."""
+        super(ToilWdlIntegrationTest, cls).setUpClass()
         cls.program = os.path.abspath("src/toil/wdl/toilwdl.py")
 
         cls.test_directory = os.path.abspath("src/toil/test/wdl/")
@@ -62,14 +72,13 @@ class ToilWdlIntegrationTest(ToilTest):
                                     data=cls.gatk_data,
                                     data_dir=cls.gatk_data_dir)
 
-    def tearDown(self):
+    def tearDown(self) -> None:
         if os.path.exists(self.output_dir):
             shutil.rmtree(self.output_dir)
 
     @classmethod
-    def tearDownClass(cls):
+    def tearDownClass(cls) -> None:
         """We generate a lot of cruft."""
-        jobstores = ['./toilWorkflowRun', '/mnt/ephemeral/workspace/toil-pull-requests/toilWorkflowRun']
         data_dirs = [cls.gatk_data_dir, cls.wdl_data_dir, cls.encode_data_dir]
         data_zips = [cls.gatk_data, cls.wdl_data, cls.encode_data]
         encode_outputs = ['ENCFF000VOL_chr21.fq.gz',
@@ -100,11 +109,12 @@ class ToilWdlIntegrationTest(ToilTest):
                           'toilwdl_compiled.py',
                           'post_processing.log',
                           'md5.log']
-        for cleanup in jobstores + data_dirs + data_zips + encode_outputs:
+        for cleanup in data_dirs + data_zips + encode_outputs:
             if os.path.isdir(cleanup):
                 shutil.rmtree(cleanup)
             elif os.path.exists(cleanup):
                 os.remove(cleanup)
+        super(ToilWdlIntegrationTest, cls).tearDownClass()
 
     @needs_docker
     def testMD5sum(self):
@@ -129,13 +139,13 @@ class ToilWdlIntegrationTest(ToilTest):
         assert select_first(['', 2, 1, 'somestring', None, '']) == 2
 
     # estimated run time <1 sec
-    def testFn_Size(self):
+    def testFn_Size(self) -> None:
         """Test the wdl built-in functional equivalent of 'size()',
         which returns a file's size based on the path."""
         from toil.common import Toil
         from toil.job import Job
         from toil.wdl.wdl_types import WDLFile
-        options = Job.Runner.getDefaultOptions('./toilWorkflowRun')
+        options = Job.Runner.getDefaultOptions(self._getTestJobStorePath())
         options.clean = 'always'
         with Toil(options) as toil:
             small = process_infile(WDLFile(file_path=os.path.abspath('src/toil/test/wdl/testfiles/vocab.wdl')), toil)

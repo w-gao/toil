@@ -1,3 +1,6 @@
+import os
+import tempfile
+
 from toil.common import Toil
 from toil.job import Job
 
@@ -7,7 +10,7 @@ def fn(job, i):
     return i+1
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions("./toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_promises")+os.sep+"toilWorkflowRun")
     options.logLevel = "INFO"
     options.clean = "always"
 

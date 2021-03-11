@@ -1,6 +1,7 @@
 import logging
 import os
 import subprocess
+import tempfile
 
 from toil.common import Toil
 from toil.job import Job
@@ -135,7 +136,7 @@ def broken_job(job, num):
     file = toil.importFile(None)
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions("./toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("debugWorkflow")+os.sep+"toilWorkflowRun")
     # options.clean = "always"
     options.stats = True
     options.logLevel = "INFO"

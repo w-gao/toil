@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import subprocess
+import tempfile
 import unittest
 
 from toil.test import ToilTest, slow, travis_test
@@ -25,10 +26,10 @@ logger = logging.getLogger(__name__)
 class ToilDebugFileTest(ToilTest):
     """A set of test cases for toilwdl.py"""
 
-    def setUp(self):
+    def setUp(self) -> None:
         """Initial set up of variables for the test."""
         subprocess.check_call([python, os.path.abspath('src/toil/test/utils/ABCWorkflowDebug/debugWorkflow.py')])
-        self.jobStoreDir = os.path.abspath('toilWorkflowRun')
+        self.jobStoreDir = self._getTestJobStorePath()
         self.tempDir = self._createTempDir(purpose='tempDir')
         self.outputDir = os.path.abspath('testoutput')
         os.makedirs(self.outputDir, exist_ok=True)

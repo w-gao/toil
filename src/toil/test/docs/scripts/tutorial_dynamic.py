@@ -1,6 +1,8 @@
+import os
+import tempfile
+
 from toil.common import Toil
 from toil.job import Job
-
 
 def binaryStringFn(job, depth, message=""):
     if depth > 0:
@@ -10,7 +12,7 @@ def binaryStringFn(job, depth, message=""):
         job.log("Binary string: {}".format(message))
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions("./toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_dynamic")+os.sep+"toilWorkflowRun")
     options.logLevel = "INFO"
     options.clean = "always"
 

@@ -1,8 +1,10 @@
 import os
 import subprocess
+import tempfile
 
 from toil.common import Toil
 from toil.job import Job
+
 
 
 def initialize_jobs(job):
@@ -25,7 +27,7 @@ def runQC(job, wdl_file, wdl_filename, json_file, json_filename, outputs_dir, ja
 
 
 if __name__ == "__main__":
-    options = Job.Runner.getDefaultOptions("./toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_wdlexample")+os.sep+"toilWorkflowRun")
     options.logLevel = "INFO"
     options.clean = "always"
 

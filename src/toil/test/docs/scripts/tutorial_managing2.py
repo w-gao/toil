@@ -1,4 +1,5 @@
 import os
+import tempfile
 
 from toil.common import Toil
 from toil.job import Job
@@ -42,7 +43,7 @@ def globalFileStoreJobFn(job):
     # which removes the file after this job and all its successors have run (if the file still exists)
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions("./toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_managing2")+os.sep+"toilWorkflowRun")
     options.logLevel = "INFO"
     options.clean = "always"
 
