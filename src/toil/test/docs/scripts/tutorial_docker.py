@@ -11,7 +11,9 @@ align = Job.wrapJobFn(apiDockerCall,
                       parameters=['ls', '-lha'])
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_docker"))
+    jobstore: str = tempfile.mkdtemp("tutorial_docker")
+    os.rmdir(jobstore)
+    options = Job.Runner.getDefaultOptions(jobstore)
     options.logLevel = "INFO"
     options.clean = "always"
 

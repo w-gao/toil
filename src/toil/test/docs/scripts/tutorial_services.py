@@ -1,3 +1,4 @@
+import os
 import tempfile
 
 from toil.common import Toil
@@ -31,7 +32,9 @@ def dbFn(loginCredentials):
 j.addChildFn(dbFn, loginCredentialsPromise)
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_services"))
+    jobstore: str = tempfile.mkdtemp("tutorial_services")
+    os.rmdir(jobstore)
+    options = Job.Runner.getDefaultOptions(jobstore)
     options.logLevel = "INFO"
     options.clean = "always"
 

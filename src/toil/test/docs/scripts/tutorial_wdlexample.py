@@ -27,7 +27,9 @@ def runQC(job, wdl_file, wdl_filename, json_file, json_filename, outputs_dir, ja
 
 
 if __name__ == "__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_wdlexample"))
+    jobstore: str = tempfile.mkdtemp("tutorial_wdlexample")
+    os.rmdir(jobstore)
+    options = Job.Runner.getDefaultOptions(jobstore)
     options.logLevel = "INFO"
     options.clean = "always"
 

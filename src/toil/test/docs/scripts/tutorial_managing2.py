@@ -43,7 +43,9 @@ def globalFileStoreJobFn(job):
     # which removes the file after this job and all its successors have run (if the file still exists)
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_managing2"))
+    jobstore: str = tempfile.mkdtemp("tutorial_managing2")
+    os.rmdir(jobstore)
+    options = Job.Runner.getDefaultOptions(jobstore)
     options.logLevel = "INFO"
     options.clean = "always"
 

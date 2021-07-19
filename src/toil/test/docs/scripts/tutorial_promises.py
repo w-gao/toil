@@ -1,3 +1,4 @@
+import os
 import tempfile
 
 from toil.common import Toil
@@ -9,7 +10,9 @@ def fn(job, i):
     return i+1
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_promises"))
+    jobstore: str = tempfile.mkdtemp("tutorial_promises")
+    os.rmdir(jobstore)
+    options = Job.Runner.getDefaultOptions(jobstore)
     options.logLevel = "INFO"
     options.clean = "always"
 
