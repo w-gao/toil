@@ -198,7 +198,7 @@ class AbstractFileStore(ABC):
 
     # Functions related to reading, writing and removing files to/from the job store
     @abstractmethod
-    def writeGlobalFile(self, localFileName, cleanup=False):
+    def writeGlobalFile(self, localFileName, cleanup=False) -> FileID:
         """
         Takes a file (as a path) and uploads it to the job store. If the file
         is in a FileStore-managed temporary directory (i.e. from
@@ -346,7 +346,7 @@ class AbstractFileStore(ABC):
         """
         raise NotImplementedError()
 
-    def getGlobalFileSize(self, fileStoreID):
+    def getGlobalFileSize(self, fileStoreID) -> int:
         """
         Get the size of the file pointed to by the given ID, in bytes.
 
