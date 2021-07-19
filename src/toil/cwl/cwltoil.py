@@ -158,7 +158,7 @@ def cwltoil_was_removed() -> None:
 # output object to the correct key of the input object.
 
 
-class UnresolvedDict(dict[Any, Any]):
+class UnresolvedDict(Dict[Any, Any]):
     """Tag to indicate a dict contains promises that must be resolved."""
 
 
@@ -1862,10 +1862,10 @@ class CWLJob(Job):
         for req in self.cwltool.requirements:
             if req["class"] == "EnvVarRequirement":
                 envDefs = cast(List[Dict[str, str]], req["envDef"])
-            for env_def in envDefs:
-                env_name = env_def["envName"]
-                if env_name in required_env_vars:
-                    env_def["envValue"] = required_env_vars[env_name]
+                for env_def in envDefs:
+                    env_name = env_def["envName"]
+                    if env_name in required_env_vars:
+                        env_def["envValue"] = required_env_vars[env_name]
         return required_env_vars
 
     def run(self, file_store: AbstractFileStore) -> Any:
@@ -1999,7 +1999,7 @@ def makeJob(
     runtime_context: cwltool.context.RuntimeContext,
     conditional: Union[Conditional, None],
 ) -> Union[
-    Tuple[CWLWorkflow, ResolveIndirect],
+    Tuple['CWLWorkflow', ResolveIndirect],
     Tuple[CWLJob, CWLJob],
     Tuple[CWLJobWrapper, CWLJobWrapper],
 ]:
@@ -2126,8 +2126,8 @@ class CWLScatter(Job):
                 self.addChild(subjob)
                 outputs.append(followOn.rv())
             else:
-                outputs.extend(
-                    self.nested_crossproduct_scatter(
+                outputs.append(
+                    self.nested_crossproduct_scatter(  # type: ignore
                         updated_joborder, scatter_keys[1:], postScatterEval
                     )
                 )
