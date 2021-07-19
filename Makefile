@@ -41,7 +41,7 @@ The 'docs' target uses Sphinx to create HTML documentation in the docs/_build di
 Targets are provided to run Toil's tests. Note that these targets do *not* automatically install
 Toil's dependencies; it is recommended to 'make develop' before running any of them.
 
-The 'test' target runs Toil's unit tests serially with pytest. It will run some docker tests and
+The 'test' target runs Toil's unit tests in parallel with pytest. It will run some docker tests and
 setup. Note: this target does not capture output from the terminal. For any of the test targets,
 set the 'tests' variable to run a particular test, e.g.
 
@@ -120,7 +120,7 @@ clean_sdist:
 # Setting SET_OWNER_TAG will tag cloud resources so that UCSC's cloud murder bot won't kill them.
 test: check_venv check_build_reqs
 	TRAVIS=true TOIL_OWNER_TAG="shared" \
-	    python -m pytest --durations=0 --log-level DEBUG --log-cli-level INFO -r s $(cov) $(tests)
+	    python -m pytest --durations=0 --log-level DEBUG --log-cli-level INFO -r s $(cov) -n auto --dist loadscope $(tests)
 
 
 # This target will skip building docker and all docker based tests
