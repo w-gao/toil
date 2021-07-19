@@ -18,7 +18,7 @@ class HelloWorld(Job):
 
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_staging")+os.sep+"toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_staging"))
     options.logLevel = "INFO"
     options.clean = "always"
 

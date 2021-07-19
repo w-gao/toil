@@ -11,7 +11,7 @@ align = Job.wrapJobFn(apiDockerCall,
                       parameters=['ls', '-lha'])
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_docker")+os.sep+"toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_docker"))
     options.logLevel = "INFO"
     options.clean = "always"
 

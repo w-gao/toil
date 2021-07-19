@@ -12,7 +12,7 @@ def binaryStringFn(job, depth, message=""):
         job.log("Binary string: {}".format(message))
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_dynamic")+os.sep+"toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_dynamic")
     options.logLevel = "INFO"
     options.clean = "always"
 

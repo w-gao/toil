@@ -1,4 +1,3 @@
-import os
 import tempfile
 
 from toil.common import Toil
@@ -13,7 +12,7 @@ class LocalFileStoreJob(Job):
         scratchFile = fileStore.getLocalTempFile()
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_managing")+os.sep+"toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_managing"))
     options.logLevel = "INFO"
     options.clean = "always"
 

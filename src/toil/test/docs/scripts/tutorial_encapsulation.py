@@ -1,4 +1,3 @@
-import os
 import tempfile
 
 from toil.common import Toil
@@ -18,7 +17,7 @@ if __name__=="__main__":
     Ap.addChild(A)
     Ap.addFollowOn(B)
 
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_encapsulation")+os.sep+"toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_encapsulation"))
     options.logLevel = "INFO"
     options.clean = "always"
 

@@ -22,7 +22,7 @@ def analysisJob(job, fileStoreID, cores=2):
     pass
 
 if __name__ == "__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_requirements")+os.sep+"toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_requirements"))
     options.logLevel = "INFO"
     options.clean = "always"
 

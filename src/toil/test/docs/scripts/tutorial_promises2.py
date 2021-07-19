@@ -1,4 +1,3 @@
-import os
 import tempfile
 
 from toil.common import Toil
@@ -16,7 +15,7 @@ def merge(strings):
     return strings[0] + strings[1]
 
 if __name__=="__main__":
-    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_promises2")+os.sep+"toilWorkflowRun")
+    options = Job.Runner.getDefaultOptions(tempfile.mkdtemp("tutorial_promises2"))
     options.loglevel = "OFF"
     options.clean = "always"
 
