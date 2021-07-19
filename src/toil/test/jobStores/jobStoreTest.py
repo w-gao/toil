@@ -28,6 +28,7 @@ from io import BytesIO
 from itertools import chain, islice
 from queue import Queue
 from threading import Thread
+from typing import Any, Tuple
 from urllib.request import Request, urlopen
 
 import pytest
@@ -1255,8 +1256,8 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
         from toil.jobStores.aws.jobStore import BucketLocationConflictException
         from toil.jobStores.aws.utils import retry_s3
         from toil.jobStores.aws.jobStore import establish_boto3_session
-        externalAWSLocation = 'us-west-1'
 
+        externalAWSLocation = 'us-west-1'
         for testRegion in 'us-east-1', 'us-west-2':
             # We run this test twice, once with the default s3 server us-east-1 as the test region
             # and once with another server (us-west-2).  The external server is always us-west-1.
@@ -1266,14 +1267,22 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
             # Create the bucket at the external region
             bucketName = 'domain-test-' + testJobStoreUUID + '--files'
             client = establish_boto3_session().client('s3', region_name=externalAWSLocation)
+            resource = establish_boto3_session().resource('s3', region_name=externalAWSLocation)
 
             for attempt in retry_s3(delays=(2, 5, 10, 30, 60), timeout=600):
                 with attempt:
+                    # Create the bucket at the home region
                     client.create_bucket(Bucket=bucketName,
                                          CreateBucketConfiguration={'LocationConstraint': externalAWSLocation})
 
-            options = Job.Runner.getDefaultOptions('aws:' + testRegion + ':domain-test-' +
-                                                   testJobStoreUUID)
+            owner_tag = os.environ.get('TOIL_OWNER_TAG')
+            if owner_tag:
+                for attempt in retry_s3(delays=(1, 1, 2, 4, 8, 16), timeout=33):
+                    with attempt:
+                        bucket_tagging = resource.BucketTagging(bucketName)
+                        bucket_tagging.put(Tagging={'TagSet': [{'Key': 'Owner', 'Value': owner_tag}]})
+
+            options = Job.Runner.getDefaultOptions('aws:' + testRegion + ':domain-test-' + testJobStoreUUID)
             options.logLevel = 'DEBUG'
             try:
                 with Toil(options) as toil:
@@ -1339,20 +1348,58 @@ class AWSJobStoreTest(AbstractJobStoreTest.Test):
         self.assertEqual(jobsInJobStore, [str(overlargeJob)])
         jobstore.delete(overlargeJob.jobStoreID)
 
+    def testMultiThreadImportFile(self) -> None:
+        """ Tests that importFile is thread-safe."""
+
+        from concurrent.futures.thread import ThreadPoolExecutor
+        from toil.lib.threading import cpu_count
+
+        threads: Tuple[int, ...] = (2, cpu_count()) if cpu_count() > 2 else (2, )
+        num_of_files: int = 5
+        size: int = 1 << 16 + 1
+
+        # The string in otherCls() is arbitrary as long as it returns a class that has access
+        # to ._externalStore() and ._prepareTestFile()
+        other: AbstractJobStoreTest.Test = AWSJobStoreTest('testSharedFiles')
+        store: Any = other._externalStore()
+
+        # prepare test files to import
+        logger.debug(f'Preparing {num_of_files} test files for testMultiThreadImportFile().')
+        test_files = [other._prepareTestFile(store, size) for _ in range(num_of_files)]
+
+        for thread_count in threads:
+            with self.subTest(f'Testing threaded importFile with "{thread_count}" threads.'):
+                results = []
+
+                with ThreadPoolExecutor(max_workers=thread_count) as executor:
+                    for url, expected_md5 in test_files:
+                        # run jobStore.importFile() asynchronously
+                        future = executor.submit(self.jobstore_initialized.importFile, url)
+                        results.append((future, expected_md5))
+
+                self.assertEqual(len(results), num_of_files)
+
+                for future, expected_md5 in results:
+                    file_id = future.result()
+                    self.assertIsInstance(file_id, FileID)
+
+                    with self.jobstore_initialized.readFileStream(file_id) as f:
+                        self.assertEqual(hashlib.md5(f.read()).hexdigest(), expected_md5)
+
     def _prepareTestFile(self, bucket, size=None):
         from toil.jobStores.aws.utils import retry_s3
 
-        fileName = 'testfile_%s' % uuid.uuid4()
-        url = 's3://%s/%s' % (bucket.name, fileName)
+        file_name = 'testfile_%s' % uuid.uuid4()
+        url = 's3://%s/%s' % (bucket.name, file_name)
         if size is None:
             return url
         with open('/dev/urandom', 'rb') as readable:
             for attempt in retry_s3():
                 with attempt:
-                    bucket.put_object(Key=fileName, Body=str(readable.read(size)))
-        return url, hashlib.md5(bucket.Object(fileName).get().get('Body').read()).hexdigest()
+                    bucket.put_object(Key=file_name, Body=str(readable.read(size)))
+        return url, hashlib.md5(bucket.Object(file_name).get().get('Body').read()).hexdigest()
 
-    def _hashTestFile(self, url):
+    def _hashTestFile(self, url: str) -> str:
         from toil.jobStores.aws.jobStore import AWSJobStore
         key = AWSJobStore._getObjectForUrl(urlparse.urlparse(url), existing=True)
         contents = key.get().get('Body').read()

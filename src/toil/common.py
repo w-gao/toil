@@ -15,34 +15,35 @@ import logging
 import os
 import pickle
 import re
-import requests
 import subprocess
 import sys
 import tempfile
 import time
 import uuid
+from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, _ArgumentGroup
+from typing import Any, Callable, List, Optional, Tuple, Union
 
-from argparse import _ArgumentGroup, ArgumentParser, ArgumentDefaultsHelpFormatter
-from typing import Optional, Callable, Any, List
+import requests
 
 from toil import logProcessContext, lookupEnvVar
 from toil.batchSystems.options import (add_all_batchsystem_options,
                                        set_batchsystem_config_defaults,
                                        set_batchsystem_options)
-from toil.lib.humanize import bytes2human, human2bytes
+from toil.lib.aws import zone_to_region
+from toil.lib.conversions import bytes2human, human2bytes
 from toil.lib.retry import retry
-from toil.provisioners import (add_provisioner_options,
-                               check_valid_node_types,
-                               cluster_factory)
-from toil.provisioners.aws import zone_to_region
+from toil.provisioners import add_provisioner_options, cluster_factory, parse_node_types
 from toil.realtimeLogger import RealtimeLogger
-from toil.statsAndLogging import (add_logging_options,
-                                  root_logger,
-                                  set_logging_from_options)
+from toil.statsAndLogging import (
+    add_logging_options,
+    root_logger,
+    set_logging_from_options,
+)
 from toil.version import dockerRegistry, dockerTag, version
 
 # aim to pack autoscaling jobs within a 30 minute block before provisioning a new node
 defaultTargetTime = 1800
+UUID_LENGTH = 32
 logger = logging.getLogger(__name__)
 
 
@@ -50,26 +51,26 @@ class Config:
     """Class to represent configuration operations for a toil workflow run."""
     def __init__(self):
         # Core options
-        self.workflowID = None
+        self.workflowID: Optional[str] = None
         """This attribute uniquely identifies the job store and therefore the workflow. It is
         necessary in order to distinguish between two consecutive workflows for which
         self.jobStore is the same, e.g. when a job store name is reused after a previous run has
-        finished sucessfully and its job store has been clean up."""
+        finished successfully and its job store has been clean up."""
         self.workflowAttemptNumber = None
         self.jobStore = None
-        self.logLevel = logging.getLevelName(root_logger.getEffectiveLevel())
-        self.workDir = None
-        self.noStdOutErr = False
-        self.stats = False
+        self.logLevel: str = logging.getLevelName(root_logger.getEffectiveLevel())
+        self.workDir: Optional[str] = None
+        self.noStdOutErr: bool = False
+        self.stats: bool = False
 
         # Because the stats option needs the jobStore to persist past the end of the run,
         # the clean default value depends the specified stats option and is determined in setOptions
         self.clean = None
-        self.cleanWorkDir = None
+        self.cleanWorkDir: Optional[bool] = None
         self.clusterStats = None
 
         # Restarting the workflow options
-        self.restart = False
+        self.restart: bool = False
 
         # Batch system options
         set_batchsystem_config_defaults(self)
@@ -77,7 +78,6 @@ class Config:
         # Autoscaling options
         self.provisioner = None
         self.nodeTypes = []
-        check_valid_node_types(self.provisioner, self.nodeTypes)
         self.minNodes = None
         self.maxNodes = [10]
         self.targetTime = defaultTargetTime
@@ -86,56 +86,56 @@ class Config:
         self.preemptableCompensation = 0.0
         self.nodeStorage = 50
         self.nodeStorageOverrides = []
-        self.metrics = False
+        self.metrics: bool = False
 
         # Parameters to limit service jobs, so preventing deadlock scheduling scenarios
-        self.maxPreemptableServiceJobs = sys.maxsize
-        self.maxServiceJobs = sys.maxsize
-        self.deadlockWait = 60  # Number of seconds we must be stuck with all services before declaring a deadlock
-        self.deadlockCheckInterval = 30  # Minimum polling delay for deadlocks
-        self.statePollingWait = 1  # Number of seconds to wait before querying job state
+        self.maxPreemptableServiceJobs: int = sys.maxsize
+        self.maxServiceJobs: int = sys.maxsize
+        self.deadlockWait: Union[float, int] = 60  # Number of seconds we must be stuck with all services before declaring a deadlock
+        self.deadlockCheckInterval: Union[float, int] = 30  # Minimum polling delay for deadlocks
+        self.statePollingWait: Union[float, int] = 1  # Number of seconds to wait before querying job state
 
         # Resource requirements
-        self.defaultMemory = 2147483648
-        self.defaultCores = 1
-        self.defaultDisk = 2147483648
-        self.readGlobalFileMutableByDefault = False
-        self.defaultPreemptable = False
-        self.maxCores = sys.maxsize
-        self.maxMemory = sys.maxsize
-        self.maxDisk = sys.maxsize
+        self.defaultMemory: int = 2147483648
+        self.defaultCores: Union[float, int] = 1
+        self.defaultDisk: int = 2147483648
+        self.readGlobalFileMutableByDefault: bool = False
+        self.defaultPreemptable: bool = False
+        self.maxCores: int = sys.maxsize
+        self.maxMemory: int = sys.maxsize
+        self.maxDisk: int = sys.maxsize
 
         # Retrying/rescuing jobs
-        self.retryCount = 1
-        self.enableUnlimitedPreemptableRetries = False
-        self.doubleMem = False
-        self.maxJobDuration = sys.maxsize
-        self.rescueJobsFrequency = 3600
+        self.retryCount: int = 1
+        self.enableUnlimitedPreemptableRetries: bool = False
+        self.doubleMem: bool = False
+        self.maxJobDuration: int = sys.maxsize
+        self.rescueJobsFrequency: int = 3600
 
         # Misc
-        self.disableCaching = False
-        self.disableChaining = False
-        self.disableJobStoreChecksumVerification = False
-        self.maxLogFileSize = 64000
+        self.disableCaching: bool = False
+        self.disableChaining: bool = False
+        self.disableJobStoreChecksumVerification: bool = False
+        self.maxLogFileSize: int = 64000
         self.writeLogs = None
         self.writeLogsGzip = None
-        self.writeLogsFromAllJobs = False
-        self.sseKey = None
-        self.servicePollingInterval = 60
-        self.useAsync = True
-        self.forceDockerAppliance = False
-        self.runCwlInternalJobsOnWorkers = False
-        self.statusWait = 3600
-        self.disableProgress = False
+        self.writeLogsFromAllJobs: bool = False
+        self.sseKey: str = None
+        self.servicePollingInterval: int = 60
+        self.useAsync: bool = True
+        self.forceDockerAppliance: bool = False
+        self.runCwlInternalJobsOnWorkers: bool = False
+        self.statusWait: int = 3600
+        self.disableProgress: bool = False
 
         # Debug options
-        self.debugWorker = False
-        self.disableWorkerOutputCapture = False
+        self.debugWorker: bool = False
+        self.disableWorkerOutputCapture: bool = False
         self.badWorker = 0.0
         self.badWorkerFailInterval = 0.01
 
         # CWL
-        self.cwl = False
+        self.cwl: bool = False
 
     def setOptions(self, options) -> None:
         """Creates a config object from the options object."""
@@ -178,9 +178,15 @@ class Config:
         # TODO: LOG LEVEL STRING
         set_option("workDir")
         if self.workDir is not None:
-            self.workDir = os.path.abspath(self.workDir)
+            self.workDir: Optional[str] = os.path.abspath(self.workDir)
             if not os.path.exists(self.workDir):
                 raise RuntimeError(f"The path provided to --workDir ({self.workDir}) does not exist.")
+
+            if len(self.workDir) > 80:
+                logger.warning(f'Length of workDir path "{self.workDir}" is {len(self.workDir)} characters.  '
+                               f'Consider setting a shorter path with --workPath or setting TMPDIR to something '
+                               f'like "/tmp" to avoid overly long paths.')
+
         set_option("noStdOutErr")
         set_option("stats")
         set_option("cleanWorkDir")
@@ -201,6 +207,7 @@ class Config:
         set_option("batchSystem")
         set_batchsystem_options(self.batchSystem, set_option)
         set_option("disableAutoDeployment")
+        set_option("coalesceStatusCalls")
         set_option("scale", float, fC(0.0))
         set_option("parasolCommand")
         set_option("parasolMaxBatches", int, iC(1))
@@ -213,7 +220,7 @@ class Config:
 
         # Autoscaling options
         set_option("provisioner")
-        set_option("nodeTypes", parse_str_list)
+        set_option("nodeTypes", parse_node_types)
         set_option("minNodes", parse_int_list)
         set_option("maxNodes", parse_int_list)
         set_option("targetTime", int)
@@ -233,11 +240,11 @@ class Config:
             for override in overrides:
                 tokens = override.split(":")
                 assert len(tokens) == 2, \
-                    'Each component of --nodeStorageOverrides must have nodeType:nodeStorage'
-                assert any(tokens[0] in n for n in self.nodeTypes), \
-                    'nodeType of --nodeStorageOverrides must be among --nodeTypes'
+                    'Each component of --nodeStorageOverrides must be of the form <instance type>:<storage in GiB>'
+                assert any(tokens[0] in n[0] for n in self.nodeTypes), \
+                    'instance type in --nodeStorageOverrides must be used in --nodeTypes'
                 assert tokens[1].isdigit(), \
-                    'nodeStorage must be an integer in --nodeStorageOverrides'
+                    'storage must be an integer in --nodeStorageOverrides'
         set_option("nodeStorageOverrides", parse_str_list, check_function=check_nodestoreage_overrides)
 
         # Parameters to limit service jobs / detect deadlocks
@@ -418,17 +425,21 @@ def addOptions(parser: ArgumentParser, config: Config = Config()):
                                           f"machine and non-auto-scaling batch systems.  The currently supported "
                                           f"choices are {provisioner_choices}.  The default is {config.provisioner}.")
     autoscaling_options.add_argument('--nodeTypes', default=None,
-                                     help="List of worker node types separated by commas. The syntax for each node "
-                                          "type depends on the provisioner used.  For the AWS provisioner this is the "
-                                          "name of an EC2 instance type, optionally followed by a colon and the price "
-                                          "in dollars to bid for a spot instance of that type.  For example: "
-                                          "'c3.8xlarge:0.42'.  If no spot bid is specified, nodes of this type will "
-                                          "be non-preemptable (non-discounted and not subject to potential early "
-                                          "termination based on the availability of discounted instances).  It is "
-                                          "acceptable to specify an instance as both preemptable and non-preemptable, "
-                                          "including it twice in the list. In that case, preemptable nodes of that "
-                                          "type will be preferred when creating new nodes once the maximum number of "
-                                          "preemptable-nodes has been reached.")
+                                     help="Specifies a list of comma-separated node types, each of which is "
+                                          "composed of slash-separated instance types, and an optional spot "
+                                          "bid set off by a colon, making the node type preemptable. Instance "
+                                          "types may appear in multiple node types, and the same node type "
+                                          "may appear as both preemptable and non-preemptable.\n"
+                                          "Valid argument specifying two node types:\n"
+                                          "\tc5.4xlarge/c5a.4xlarge:0.42,t2.large\n"
+                                          "Node types:\n"
+                                          "\tc5.4xlarge/c5a.4xlarge:0.42 and t2.large\n"
+                                          "Instance types:\n"
+                                          "\tc5.4xlarge, c5a.4xlarge, and t2.large\n"
+                                          "Semantics:\n"
+                                          "\tBid $0.42/hour for either c5.4xlarge or c5a.4xlarge instances,\n"
+                                          "\ttreated interchangeably, while they are available at that price,\n"
+                                          "\tand buy t2.large instances at full price")
     autoscaling_options.add_argument('--minNodes', default=None,
                                      help="Mininum number of nodes of each type in the cluster, if using "
                                           "auto-scaling.  This should be provided as a comma-separated list of the "
@@ -514,12 +525,12 @@ def addOptions(parser: ArgumentParser, config: Config = Config()):
     disk_mem_note = 'Standard suffixes like K, Ki, M, Mi, G or Gi are supported'
     resource_options.add_argument('--defaultMemory', dest='defaultMemory', default=None, metavar='INT',
                                   help=resource_help_msg.format('default', 'memory', disk_mem_note,
-                                                                bytes2human(config.defaultMemory, symbols="iec")))
+                                                                bytes2human(config.defaultMemory)))
     resource_options.add_argument('--defaultCores', dest='defaultCores', default=None, metavar='FLOAT',
                                   help=resource_help_msg.format('default', 'cpu', cpu_note, str(config.defaultCores)))
     resource_options.add_argument('--defaultDisk', dest='defaultDisk', default=None, metavar='INT',
                                   help=resource_help_msg.format('default', 'disk', disk_mem_note,
-                                                                bytes2human(config.defaultDisk, symbols="iec")))
+                                                                bytes2human(config.defaultDisk)))
     resource_options.add_argument('--defaultPreemptable', dest='defaultPreemptable', metavar='BOOL',
                                   type='bool', nargs='?', const=True, default=False,
                                   help='Make all jobs able to run on preemptable (spot) nodes by default.')
@@ -527,10 +538,10 @@ def addOptions(parser: ArgumentParser, config: Config = Config()):
                                   help=resource_help_msg.format('max', 'cpu', cpu_note, str(config.maxCores)))
     resource_options.add_argument('--maxMemory', dest='maxMemory', default=None, metavar='INT',
                                   help=resource_help_msg.format('max', 'memory', disk_mem_note,
-                                                                bytes2human(config.maxMemory, symbols="iec")))
+                                                                bytes2human(config.maxMemory)))
     resource_options.add_argument('--maxDisk', dest='maxDisk', default=None, metavar='INT',
                                   help=resource_help_msg.format('max', 'disk', disk_mem_note,
-                                                                bytes2human(config.maxDisk, symbols="iec")))
+                                                                bytes2human(config.maxDisk)))
 
     # Retrying/rescuing jobs
     job_options = parser.add_argument_group(
@@ -645,9 +656,9 @@ def parseBool(val):
         raise RuntimeError("Could not interpret \"%s\" as a boolean value" % val)
 
 
-def getNodeID():
+def getNodeID() -> str:
     """
-    Return unique ID of the current node (host).
+    Return unique ID of the current node (host). The resulting string will be convertable to a uuid.UUID.
 
     Tries several methods until success. The returned ID should be identical across calls from different processes on
     the same node at least until the next OS reboot.
@@ -663,13 +674,15 @@ def getNodeID():
                 with open(idSourceFile, "r") as inp:
                     nodeID = inp.readline().strip()
             except EnvironmentError:
-                logger.warning(("Exception when trying to read ID file {}. Will try next method to get node ID.").format(idSourceFile), exc_info=True)
+                logger.warning(f"Exception when trying to read ID file {idSourceFile}.  "
+                               f"Will try next method to get node ID.", exc_info=True)
             else:
                 if len(nodeID.split()) == 1:
-                    logger.debug("Obtained node ID {} from file {}".format(nodeID, idSourceFile))
+                    logger.debug(f"Obtained node ID {nodeID} from file {idSourceFile}")
                     break
                 else:
-                    logger.warning(("Node ID {} from file {} contains spaces. Will try next method to get node ID.").format(nodeID, idSourceFile))
+                    logger.warning(f"Node ID {nodeID} from file {idSourceFile} contains spaces.  "
+                                   f"Will try next method to get node ID.")
     else:
         nodeIDs = []
         for i_call in range(2):
@@ -677,22 +690,27 @@ def getNodeID():
             if len(nodeID.split()) == 1:
                 nodeIDs.append(nodeID)
             else:
-                logger.warning("Node ID {} from uuid.getnode() contains spaces".format(nodeID))
+                logger.warning(f"Node ID {nodeID} from uuid.getnode() contains spaces")
         nodeID = ""
         if len(nodeIDs) == 2:
             if nodeIDs[0] == nodeIDs[1]:
                 nodeID = nodeIDs[0]
             else:
-                logger.warning(
-                    "Different node IDs {} received from repeated calls to uuid.getnode(). You should use " \
-                    "another method to generate node ID.".format(nodeIDs))
+                logger.warning(f"Different node IDs {nodeIDs} received from repeated calls to uuid.getnode().  "
+                               f"You should use another method to generate node ID.")
 
-            logger.debug("Obtained node ID {} from uuid.getnode()".format(nodeID))
+            logger.debug(f"Obtained node ID {nodeID} from uuid.getnode()")
     if not nodeID:
-        logger.warning(
-            "Failed to generate stable node ID, returning empty string. If you see this message with a " \
-            "work dir on a shared file system when using workers running on multiple nodes, you might experience " \
-            "cryptic job failures")
+        logger.warning("Failed to generate stable node ID, returning empty string. If you see this message with a "
+                       "work dir on a shared file system when using workers running on multiple nodes, you might "
+                       "experience cryptic job failures")
+    if len(nodeID.replace('-', '')) < UUID_LENGTH:
+        # Some platforms (Mac) give us not enough actual hex characters.
+        # Repeat them so the result is convertable to a uuid.UUID
+        nodeID = nodeID.replace('-', '')
+        num_repeats = UUID_LENGTH // len(nodeID) + 1
+        nodeID = nodeID * num_repeats
+        nodeID = nodeID[:UUID_LENGTH]
     return nodeID
 
 
@@ -978,13 +996,16 @@ class Toil:
                     userScript = None
         else:
             # This branch is hit on restarts
-            from toil.jobStores.abstractJobStore import NoSuchFileException
-            try:
-                with self._jobStore.readSharedFileStream('userScript') as f:
-                    userScript = safeUnpickleFromStream(f)
-            except NoSuchFileException:
-                logger.debug('User script neither set explicitly nor present in the job store.')
-                userScript = None
+            if (self._batchSystem.supportsAutoDeployment() and
+                not self.config.disableAutoDeployment):
+                # We could deploy a user script
+                from toil.jobStores.abstractJobStore import NoSuchFileException
+                try:
+                    with self._jobStore.readSharedFileStream('userScript') as f:
+                        userScript = safeUnpickleFromStream(f)
+                except NoSuchFileException:
+                    logger.debug('User script neither set explicitly nor present in the job store.')
+                    userScript = None
         if userScript is None:
             logger.debug('No user script to auto-deploy.')
         else:
@@ -1047,7 +1068,7 @@ class Toil:
         self._jobCache[job.jobStoreID] = job
 
     @staticmethod
-    def getToilWorkDir(configWorkDir=None):
+    def getToilWorkDir(configWorkDir: Optional[str] = None) -> str:
         """
         Returns a path to a writable directory under which per-workflow
         directories exist.  This directory is always required to exist on a
@@ -1059,11 +1080,9 @@ class Toil:
         :return: Path to the Toil work directory, constant across all machines
         :rtype: str
         """
-
-        workDir = configWorkDir or os.getenv('TOIL_WORKDIR') or tempfile.gettempdir()
+        workDir = os.getenv('TOIL_WORKDIR_OVERRIDE') or configWorkDir or os.getenv('TOIL_WORKDIR') or tempfile.gettempdir()
         if not os.path.exists(workDir):
-            raise RuntimeError("The directory specified by --workDir or TOIL_WORKDIR (%s) does not "
-                               "exist." % workDir)
+            raise RuntimeError(f'The directory specified by --workDir or TOIL_WORKDIR ({workDir}) does not exist.')
         return workDir
 
     @classmethod
@@ -1072,19 +1091,16 @@ class Toil:
         Returns a path to the directory where worker directories and the cache will be located
         for this workflow on this machine.
 
-        :param str workflowID: Unique identifier for the workflow
         :param str configWorkDir: Value passed to the program using the --workDir flag
         :return: Path to the local workflow directory on this machine
         :rtype: str
         """
-
         # Get the global Toil work directory. This ensures that it exists.
         base = cls.getToilWorkDir(configWorkDir=configWorkDir)
 
-        # Create a directory unique to each host and workflow in case workDir
-        # is on a shared FS. This prevents workers on different nodes from
-        # erasing each other's directories.
-        workflowDir = os.path.join(base, 'node-%s-%s' % (workflowID, getNodeID()))
+        # Create a directory unique to each host in case workDir is on a shared FS.
+        # This prevents workers on different nodes from erasing each other's directories.
+        workflowDir: str = os.path.join(base, str(uuid.uuid5(uuid.UUID(getNodeID()), workflowID)).replace('-', ''))
         try:
             # Directory creation is atomic
             os.mkdir(workflowDir)
@@ -1372,7 +1388,7 @@ def cacheDirName(workflowID):
     return f'cache-{workflowID}'
 
 
-def getDirSizeRecursively(dirPath):
+def getDirSizeRecursively(dirPath: str) -> int:
     """
     This method will return the cumulative number of bytes occupied by the files
     on disk in the directory and its subdirectories.
@@ -1404,7 +1420,7 @@ def getDirSizeRecursively(dirPath):
         return 0
 
 
-def getFileSystemSize(dirPath):
+def getFileSystemSize(dirPath: str) -> Tuple[int, int]:
     """
     Return the free space, and total size of the file system hosting `dirPath`.
 

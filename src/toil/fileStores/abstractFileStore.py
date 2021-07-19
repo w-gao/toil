@@ -17,14 +17,15 @@ import tempfile
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from threading import Event, Semaphore
-from typing import Union
+from typing import Callable, Generator, Union
 
 import dill
 
 from toil.common import cacheDirName
 from toil.fileStores import FileID
+from toil.jobStores.abstractJobStore import AbstractJobStore
 from toil.lib.io import WriteWatchingStream
-
+from toil.job import Job, JobDescription
 logger = logging.getLogger(__name__)
 
 
@@ -57,7 +58,7 @@ class AbstractFileStore(ABC):
     _pendingFileWrites = set()
     _terminateEvent = Event()  # Used to signify crashes in threads
 
-    def __init__(self, jobStore, jobDesc, localTempDir, waitForPreviousCommit):
+    def __init__(self, jobStore: AbstractJobStore, jobDesc: JobDescription, localTempDir: str, waitForPreviousCommit: Callable[[],None]) -> None:
         """
         Create a new file store object.
 
@@ -76,14 +77,14 @@ class AbstractFileStore(ABC):
                they did race, it might be possible for the later job to be fully
                marked as completed in the job store before the eralier job was.
         """
-        self.jobStore = jobStore
-        self.jobDesc = jobDesc
-        self.localTempDir = os.path.abspath(localTempDir)
-        self.workFlowDir = os.path.dirname(self.localTempDir)
-        self.workDir = os.path.dirname(self.localTempDir)
-        self.jobName = self.jobDesc.command.split()[1]
+        self.jobStore              = jobStore
+        self.jobDesc               = jobDesc
+        self.localTempDir: str     = os.path.abspath(localTempDir)
+        self.workFlowDir: str      = os.path.dirname(self.localTempDir)
+        self.workDir: str          = os.path.dirname(self.localTempDir)
+        self.jobName: str          = self.jobDesc.command.split()[1]
         self.waitForPreviousCommit = waitForPreviousCommit
-        self.loggingMessages = []
+        self.loggingMessages       = []
         # Records file IDs of files deleted during the current job. Doesn't get
         # committed back until the job is completely successful, because if the
         # job is re-run it will need to be able to re-delete these files.
@@ -135,7 +136,7 @@ class AbstractFileStore(ABC):
             NonCachingFileStore.shutdown(workflowDir)
 
     @contextmanager
-    def open(self, job):
+    def open(self, job: Job) -> Generator[None, None, None]:
         """
         The context manager used to conduct tasks prior-to, and after a job has
         been run. File operations are only permitted inside the context
@@ -167,7 +168,7 @@ class AbstractFileStore(ABC):
                  terminates, removing all files it contains recursively.
         :rtype: str
         """
-        return os.path.abspath(tempfile.mkdtemp(prefix="t", dir=self.localTempDir))
+        return os.path.abspath(tempfile.mkdtemp(dir=self.localTempDir))
 
     def getLocalTempFile(self):
         """
@@ -476,7 +477,7 @@ class AbstractFileStore(ABC):
             os.rename(fileName + '.tmp', fileName)
 
     # Functions related to logging
-    def logToMaster(self, text, level=logging.INFO):
+    def logToMaster(self, text: str, level: int =logging.INFO) -> None:
         """
         Send a logging message to the leader. The message will also be \
         logged by the worker at the same level.

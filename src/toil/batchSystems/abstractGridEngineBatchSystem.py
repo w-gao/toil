@@ -17,6 +17,7 @@ from abc import ABCMeta, abstractmethod
 from datetime import datetime
 from queue import Empty, Queue
 from threading import Lock, Thread
+from typing import Any, List, Union
 
 from toil.batchSystems.abstractBatchSystem import (BatchJobExitReason,
                                                    BatchSystemCleanupSupport,
@@ -34,7 +35,7 @@ class AbstractGridEngineBatchSystem(BatchSystemCleanupSupport):
 
     class Worker(Thread, metaclass=ABCMeta):
 
-        def __init__(self, newJobsQueue, updatedJobsQueue, killQueue, killedJobsQueue, boss):
+        def __init__(self, newJobsQueue: Queue, updatedJobsQueue: Queue, killQueue: Queue, killedJobsQueue: Queue, boss: 'AbstractGridEngineBatchSystem') -> None:
             """
             Abstract worker interface class. All instances are created with five
             initial arguments (below). Note the Queue instances passed are empty.
@@ -55,7 +56,7 @@ class AbstractGridEngineBatchSystem(BatchSystemCleanupSupport):
             self.updatedJobsQueue = updatedJobsQueue
             self.killQueue = killQueue
             self.killedJobsQueue = killedJobsQueue
-            self.waitingJobs = list()
+            self.waitingJobs: List[Any] = list()
             self.runningJobs = set()
             self.runningJobsLock = Lock()
             self.batchJobIDs = dict()
@@ -90,7 +91,7 @@ class AbstractGridEngineBatchSystem(BatchSystemCleanupSupport):
                 self.runningJobs.remove(jobID)
             del self.batchJobIDs[jobID]
 
-        def createJobs(self, newJob):
+        def createJobs(self, newJob: Any) -> bool:
             """
             Create a new job with the Toil job ID.
 
@@ -181,19 +182,49 @@ class AbstractGridEngineBatchSystem(BatchSystemCleanupSupport):
                 return self._checkOnJobsCache
 
             activity = False
-            for jobID in list(self.runningJobs):
-                batchJobID = self.getBatchSystemID(jobID)
-                status = self.boss.with_retries(self.getJobExitCode, batchJobID)
-                if status is not None and isinstance(status, int):
-                    activity = True
-                    self.updatedJobsQueue.put(UpdatedBatchJobInfo(jobID=jobID, exitStatus=status, exitReason=None, wallTime=None))
-                    self.forgetJob(jobID)
-                elif status is not None and isinstance(status, BatchJobExitReason):
-                    activity = True
-                    self.updatedJobsQueue.put(UpdatedBatchJobInfo(jobID=jobID, exitStatus=1, exitReason=status, wallTime=None))
-                    self.forgetJob(jobID)
+            running_job_list = list(self.runningJobs)
+            if self.boss.config.coalesceStatusCalls:
+                batch_job_id_list = list(map(self.getBatchSystemID, running_job_list))
+                if batch_job_id_list:
+                    statuses = self.boss.with_retries(
+                        self.coalesce_job_exit_codes, batch_job_id_list
+                    )
+                    if statuses is not None:
+                        for running_job_id, status in zip(running_job_list, statuses):
+                            activity = self._handle_job_status(
+                                running_job_id, status, activity
+                            )
+            else:
+                for job_id in running_job_list:
+                    batch_job_id = self.getBatchSystemID(job_id)
+                    status = self.boss.with_retries(self.getJobExitCode, batch_job_id)
+                    activity = self._handle_job_status(job_id, status, activity)
             self._checkOnJobsCache = activity
             self._checkOnJobsTimestamp = datetime.now()
+            return activity
+
+        def _handle_job_status(
+            self, job_id: int, status: Union[int, None], activity: bool
+        ) -> bool:
+            """
+            Helper method for checkOnJobs to handle job statuses
+            """
+            if status is not None:
+                self.updatedJobsQueue.put(
+                    UpdatedBatchJobInfo(
+                        jobID=job_id, exitStatus=status, exitReason=None, wallTime=None
+                    )
+                )
+                self.forgetJob(job_id)
+                return True
+            if status is not None and isinstance(status, BatchJobExitReason):
+                self.updatedJobsQueue.put(
+                    UpdatedBatchJobInfo(
+                        jobID=job_id, exitStatus=1, exitReason=status, wallTime=None
+                    )
+                )
+                self.forgetJob(job_id)
+                return True
             return activity
 
         def _runStep(self):
@@ -223,6 +254,16 @@ class AbstractGridEngineBatchSystem(BatchSystemCleanupSupport):
             except Exception as ex:
                 logger.error("GridEngine like batch system failure", exc_info=ex)
                 raise
+
+        @abstractmethod
+        def coalesce_job_exit_codes(self, batch_job_id_list: list) -> list:
+            """
+            Returns exit codes for a list of jobs.
+            Implementation-specific; called by
+            AbstractGridEngineWorker.checkOnJobs()
+            :param string batchjobIDList: List of batch system job ID
+            """
+            raise NotImplementedError()
 
         @abstractmethod
         def prepareSubmission(self, cpu, memory, jobID, command, jobName):
@@ -293,11 +334,6 @@ class AbstractGridEngineBatchSystem(BatchSystemCleanupSupport):
         self.config = config
 
         self.currentJobs = set()
-
-        # NOTE: this may be batch system dependent, maybe move into the worker?
-        # Doing so would effectively make each subclass of AbstractGridEngineBatchSystem
-        # much smaller
-        self.maxCPU, self.maxMEM = self.obtainSystemConstants()
 
         self.newJobsQueue = Queue()
         self.updatedJobsQueue = Queue()
@@ -416,14 +452,6 @@ class AbstractGridEngineBatchSystem(BatchSystemCleanupSupport):
         """
         time.sleep(sleeptime)
         return sleeptime
-
-    @classmethod
-    @abstractmethod
-    def obtainSystemConstants(cls):
-        """
-        Returns the max. memory and max. CPU for the system
-        """
-        raise NotImplementedError()
 
     def with_retries(self, operation, *args, **kwargs):
         """

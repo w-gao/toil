@@ -27,6 +27,7 @@ from abc import ABCMeta, abstractmethod
 from argparse import ArgumentDefaultsHelpFormatter, ArgumentParser, Namespace
 from contextlib import contextmanager
 from io import BytesIO
+from typing import Dict, Optional, Union, Set
 
 import dill
 
@@ -34,7 +35,7 @@ from toil.common import Config, Toil, addOptions, safeUnpickleFromStream
 from toil.deferred import DeferredFunction
 from toil.fileStores import FileID
 from toil.lib.expando import Expando
-from toil.lib.humanize import human2bytes
+from toil.lib.conversions import human2bytes
 from toil.lib.resources import (get_total_cpu_time,
                                 get_total_cpu_time_and_memory_usage)
 from toil.resource import ModuleDescriptor
@@ -310,7 +311,7 @@ class Requirer:
         return dict(self._requirementOverrides)
 
     @property
-    def disk(self):
+    def disk(self) -> int:
         """
         The maximum number of bytes of disk required.
 
@@ -372,7 +373,7 @@ class JobDescription(Requirer):
     their specific parameters.
     """
 
-    def __init__(self, requirements, jobName, unitName='', displayName='', command=None):
+    def __init__(self, requirements: Dict[str, Union[int, str, bool]], jobName: str, unitName: str='', displayName: str='', command: Optional[str]=None) -> None:
         """
         Create a new JobDescription.
 
@@ -415,7 +416,7 @@ class JobDescription(Requirer):
         # Gets replaced with/rewritten into the real, executable command when
         # the leader passes the description off to the batch system to be
         # executed.
-        self.command = command
+        self.command: Optional[str] = command
 
         # Set scheduling properties that the leader read to think about scheduling.
 
@@ -470,6 +471,10 @@ class JobDescription(Requirer):
         # A jobStoreFileID of the log file for a job. This will be None unless the job failed and
         # the logging has been captured to be reported on the leader.
         self.logJobStoreFileID = None
+
+        # Every time we update a job description in place in the job store, we
+        # increment this.
+        self._job_version = 0
 
     def serviceHostIDsInBatches(self):
         """
@@ -633,6 +638,8 @@ class JobDescription(Requirer):
         # roll up a whole chain of jobs and delete them when they're all done.
         self.filesToDelete += other.filesToDelete
         self.jobsToDelete += other.jobsToDelete
+
+        self._job_version = other._job_version
 
     def addChild(self, childID):
         """
@@ -813,6 +820,8 @@ class JobDescription(Requirer):
         if self.jobStoreID is not None:
             printedName += ' ' + str(self.jobStoreID)
 
+        printedName += ' v' + str(self._job_version)
+
         return printedName
 
     # Not usable as a key (not hashable) and doesn't have any value-equality.
@@ -821,6 +830,16 @@ class JobDescription(Requirer):
 
     def __repr__(self):
         return '%s( **%r )' % (self.__class__.__name__, self.__dict__)
+
+    def pre_update_hook(self) -> None:
+        """
+        Called by the job store before pickling and saving a created or updated
+        version of a job.
+        """
+
+        self._job_version += 1
+        logger.debug("New job version: %s", self)
+
 
 
 class ServiceJobDescription(JobDescription):
@@ -956,9 +975,9 @@ class Job:
         :param displayName: Human-readable job type display name.
         :param descriptionClass: Override for the JobDescription class used to describe the job.
 
-        :type memory: int or string convertible by toil.lib.humanize.human2bytes to an int
-        :type cores: float, int, or string convertible by toil.lib.humanize.human2bytes to an int
-        :type disk: int or string convertible by toil.lib.humanize.human2bytes to an int
+        :type memory: int or string convertible by toil.lib.conversions.human2bytes to an int
+        :type cores: float, int, or string convertible by toil.lib.conversions.human2bytes to an int
+        :type disk: int or string convertible by toil.lib.conversions.human2bytes to an int
         :type preemptable: bool, int in {0, 1}, or string in {'false', 'true'} in any case
         :type unitName: str
         :type checkpoint: bool
@@ -1050,7 +1069,7 @@ class Job:
     # requirements through to the JobDescription.
 
     @property
-    def disk(self):
+    def disk(self) -> int:
         """
         The maximum number of bytes of disk the job will require to run.
 
@@ -1447,7 +1466,8 @@ class Job:
             raise JobPromiseConstraintError(self)
         # TODO: can we guarantee self.jobStoreID is populated and so pass that here?
         with self._promiseJobStore.writeFileStream() as (fileHandle, jobStoreFileID):
-            promise = UnfulfilledPromiseSentinel(str(self.description), False)
+            promise = UnfulfilledPromiseSentinel(str(self.description), jobStoreFileID, False)
+            logger.debug('Issuing promise %s for result of %s', jobStoreFileID, self.description)
             pickle.dump(promise, fileHandle, pickle.HIGHEST_PROTOCOL)
         self._rvs[path].append(jobStoreFileID)
         return self._promiseJobStore.config.jobStore, jobStoreFileID
@@ -1495,14 +1515,12 @@ class Job:
         self.checkJobGraphAcylic()
         self.checkNewCheckpointsAreLeafVertices()
 
-    def getRootJobs(self):
+    def getRootJobs(self) -> Set['Job']:
         """
-        :return: The roots of the connected component of jobs that contains this job.
-        A root is a job with no predecessors.
+        Returns the set of root job objects that contain this job.
+        A root job is a job with no predecessors (i.e. which are not children, follow-ons, or services).
 
         Only deals with jobs created here, rather than loaded from the job store.
-
-        :rtype : set of Job objects with no predecessors (i.e. which are not children, follow-ons, or services)
         """
 
         # Start assuming all jobs are roots
@@ -1875,7 +1893,7 @@ class Job:
                 # either case, we just pass it on.
                 promisedValue = returnValues
             else:
-                # If there is an path ...
+                # If there is a path ...
                 if isinstance(returnValues, Promise):
                     # ... and the value itself is a Promise, we need to created a new, narrower
                     # promise and pass it on.
@@ -1889,8 +1907,11 @@ class Job:
                 # File may be gone if the job is a service being re-run and the accessing job is
                 # already complete.
                 if jobStore.fileExists(promiseFileStoreID):
+                    logger.debug("Resolve promise %s from %s with a %s", promiseFileStoreID, self, type(promisedValue))
                     with jobStore.updateFileStream(promiseFileStoreID) as fileHandle:
                         pickle.dump(promisedValue, fileHandle, pickle.HIGHEST_PROTOCOL)
+                else:
+                    logger.debug("Do not resolve promise %s from %s because it is no longer needed", promiseFileStoreID, self)
 
     # Functions associated with Job.checkJobGraphAcyclic to establish that the job graph does not
     # contain any cycles of dependencies:
@@ -2382,7 +2403,6 @@ class Job:
         """
         return self._description.displayName
 
-
 class JobException(Exception):
     """
     General job exception.
@@ -2578,7 +2598,7 @@ class EncapsulatedJob(Job):
     predecessors automatically. Care should be exercised to ensure the encapsulated job has the
     proper set of predecessors.
 
-    The return value of an encapsulatd job (as accessed by the :func:`toil.job.Job.rv` function)
+    The return value of an encapsulated job (as accessed by the :func:`toil.job.Job.rv` function)
     is the return value of the root job, e.g. A().encapsulate().rv() and A().rv() will resolve to
     the same value after A or A.encapsulate() has been run.
     """
@@ -2931,17 +2951,19 @@ class PromisedRequirement:
 class UnfulfilledPromiseSentinel:
     """This should be overwritten by a proper promised value. Throws an
     exception when unpickled."""
-    def __init__(self, fulfillingJobName, unpickled):
+    def __init__(self, fulfillingJobName, file_id: str, unpickled):
         self.fulfillingJobName = fulfillingJobName
+        self.file_id = file_id
 
     @staticmethod
     def __setstate__(stateDict):
         """Only called when unpickling. This won't be unpickled unless the
         promise wasn't resolved, so we throw an exception."""
         jobName = stateDict['fulfillingJobName']
-        raise RuntimeError("This job was passed a promise that wasn't yet resolved when it "
-                           "ran. The job {jobName} that fulfills this promise hasn't yet "
-                           "finished. This means that there aren't enough constraints to "
-                           "ensure the current job always runs after {jobName}. Consider adding a "
-                           "follow-on indirection between this job and its parent, or adding "
-                           "this job as a child/follow-on of {jobName}.".format(jobName=jobName))
+        file_id = stateDict['file_id']
+        raise RuntimeError(f"This job was passed promise {file_id} that wasn't yet resolved when it "
+                           f"ran. The job {jobName} that fulfills this promise hasn't yet "
+                           f"finished. This means that there aren't enough constraints to "
+                           f"ensure the current job always runs after {jobName}. Consider adding a "
+                           f"follow-on indirection between this job and its parent, or adding "
+                           f"this job as a child/follow-on of {jobName}.")

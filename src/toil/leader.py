@@ -23,6 +23,7 @@ import os
 import pickle
 import sys
 import time
+from typing import List
 
 import enlighten
 
@@ -30,20 +31,22 @@ from toil import resolveEntryPoint
 from toil.batchSystems import DeadlockException
 from toil.batchSystems.abstractBatchSystem import BatchJobExitReason
 from toil.common import Toil, ToilMetrics
-from toil.job import CheckpointJobDescription, ServiceJobDescription
-from toil.jobStores.abstractJobStore import NoSuchJobException
-from toil.lib.humanize import bytes2human
+from toil.job import JobDescription, CheckpointJobDescription, ServiceJobDescription
+from toil.jobStores.abstractJobStore import AbstractJobStore, NoSuchJobException
+from toil.lib.conversions import bytes2human
 from toil.lib.throttle import LocalThrottle
+from toil.provisioners.abstractProvisioner import AbstractProvisioner
 from toil.provisioners.clusterScaler import ScalerThread
 from toil.serviceManager import ServiceManager
 from toil.statsAndLogging import StatsAndLogging
 from toil.toilState import ToilState
 
 try:
-    from toil.cwl.cwltoil import CWL_INTERNAL_JOBS
+    from toil.cwl.cwltoil import CWL_INTERNAL_JOBS, CWL_UNSUPPORTED_REQUIREMENT_EXIT_CODE
 except ImportError:
     # CWL extra not installed
     CWL_INTERNAL_JOBS = ()
+    CWL_UNSUPPORTED_REQUIREMENT_EXIT_CODE = 0
 
 
 logger = logging.getLogger( __name__ )
@@ -65,8 +68,18 @@ logger = logging.getLogger( __name__ )
 
 
 class FailedJobsException(Exception):
-    def __init__(self, jobStoreLocator, failedJobs, jobStore):
+    def __init__(self, jobStoreLocator: str, failedJobs: List[JobDescription], jobStore: AbstractJobStore, exit_code: int = 1):
+        """
+        Make an exception to report failed jobs.
+
+        :param jobStoreLocator: The job store locator that says what job store has the failed jobs.
+        :param failedJobs: All the failed jobs
+        :param jobStore: The actual open job store with the failed jobs in it.
+        :param exit_code: Recommended process exit code.
+
+        """
         self.msg = "The job store '%s' contains %i failed jobs" % (jobStoreLocator, len(failedJobs))
+        self.exit_code = exit_code
         try:
             self.msg += ": %s" % ", ".join((str(failedJob) for failedJob in failedJobs))
             for jobDesc in failedJobs:
@@ -97,7 +110,7 @@ class FailedJobsException(Exception):
 class Leader(object):
     """ Class that encapsulates the logic of the leader.
     """
-    def __init__(self, config, batchSystem, provisioner, jobStore, rootJob, jobCache=None):
+    def __init__(self, config, batchSystem, provisioner: AbstractProvisioner, jobStore, rootJob, jobCache=None):
         """
         :param toil.common.Config config:
         :param toil.batchSystems.abstractBatchSystem.AbstractBatchSystem batchSystem:
@@ -153,7 +166,7 @@ class Leader(object):
 
         # Create cluster scaling thread if the provisioner is not None
         self.clusterScaler = None
-        if self.provisioner is not None and len(self.provisioner.nodeTypes) > 0:
+        if self.provisioner is not None and self.provisioner.hasAutoscaledNodeTypes():
             self.clusterScaler = ScalerThread(self.provisioner, self, self.config)
 
         # A service manager thread to start and terminate services
@@ -189,6 +202,11 @@ class Leader(object):
         # And set a format that shows failures
         self.PROGRESS_BAR_FORMAT = ('{desc}{desc_pad}{percentage:3.0f}%|{bar}| {count:{len_total}d}/{total:d} '
                                     '({count_1:d} failures) [{elapsed}<{eta}, {rate:.2f}{unit_pad}{unit}/s]')
+
+        # What exit code should the process use if the workflow failed?
+        # Needed in case a worker detects a CWL issue that a CWL runner must
+        # report to its caller.
+        self.recommended_fail_exit_code = 1
 
         # TODO: No way to set background color on the terminal for the bar.
 
@@ -257,9 +275,8 @@ class Leader(object):
 
             if len(self.toilState.totalFailedJobs):
                 logger.info("Failed jobs at end of the run: %s", ' '.join(str(job) for job in self.toilState.totalFailedJobs))
-            # Cleanup
-            if len(self.toilState.totalFailedJobs) > 0:
-                raise FailedJobsException(self.config.jobStore, self.toilState.totalFailedJobs, self.jobStore)
+                raise FailedJobsException(self.config.jobStore, self.toilState.totalFailedJobs,
+                                          self.jobStore, exit_code=self.recommended_fail_exit_code)
 
             return self.jobStore.getRootJobReturnValue()
 
@@ -569,6 +586,13 @@ class Leader(object):
             else:
                 logger.warning(f'Job failed with exit value {exitStatus}: {updatedJob}\n'
                                f'Exit reason: {exitReason}')
+                if exitStatus == CWL_UNSUPPORTED_REQUIREMENT_EXIT_CODE:
+                    # This is a CWL job informing us that the workflow is
+                    # asking things of us that Toil can't do. When we raise an
+                    # exception because of this, make sure to forward along
+                    # this exit code.
+                    logger.warning("This indicates an unsupported CWL requirement!")
+                    self.recommended_fail_exit_code = CWL_UNSUPPORTED_REQUIREMENT_EXIT_CODE
             if self.toilMetrics:
                 self.toilMetrics.logCompletedJob(updatedJob)
             self.processFinishedJob(jobID, exitStatus, wallTime=wallTime, exitReason=exitReason)
@@ -996,7 +1020,7 @@ class Leader(object):
                 # guaranteed to exist on the leader and workers.
                 workDir = Toil.getToilWorkDir(self.config.workDir)
                 # This must match the format in AbstractBatchSystem.formatStdOutErrPath()
-                batchSystemFilePrefix = 'toil_workflow_{}_job_{}_batch_'.format(self.config.workflowID, batchSystemID)
+                batchSystemFilePrefix =  f'toil_{self.config.workflowID}.{batchSystemID}'
                 batchSystemFileGlob = os.path.join(workDir, batchSystemFilePrefix + '*.log')
                 batchSystemFiles = glob.glob(batchSystemFileGlob)
                 for batchSystemFile in batchSystemFiles:
