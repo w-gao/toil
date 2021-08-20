@@ -88,9 +88,9 @@ def run_setup():
         pymesos,
         psutil]
     wdl_reqs = [
-        wdlparse
-    ]
-    server_reqs = [connexion]
+        wdlparse]
+    server_reqs = [
+        connexion]
 
     # htcondor is not supported by apple
     # this is tricky to conditionally support in 'all' due
@@ -147,6 +147,7 @@ def run_setup():
             'kubernetes': kubernetes_reqs,
             'mesos': mesos_reqs,
             'wdl': wdl_reqs,
+            'server': server_reqs,
             'all': all_reqs},
         package_dir={'': 'src'},
         packages=find_packages(where='src',

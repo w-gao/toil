@@ -1,9 +1,9 @@
-get:
+post:
   tags:
   - Workflow Runs
-  summary: GetRunLog
-  description: This endpoint provides detailed information about a given workflow run. The returned result has information about the outputs produced by this workflow (if available), a log object which allows the stderr and stdout to be retrieved, a log array so stderr/stdout for individual tasks can be retrieved, and the overall state of the workflow run (e.g. RUNNING, see the State section).
-  operationId: GetRunLog
+  summary: CancelRun
+  description: Cancel a running workflow.
+  operationId: CancelRun
   parameters:
   - name: run_id
     in: path
@@ -19,7 +19,7 @@ get:
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/RunLog'
+            $ref: '#/components/schemas/RunId'
     401:
       description: The request is unauthorized.
       content:
@@ -33,7 +33,7 @@ get:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
     404:
-      description: The requested workflow run not found.
+      description: The requested workflow run wasn't found.
       content:
         application/json:
           schema:

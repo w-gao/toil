@@ -5,7 +5,7 @@ import connexion
 from toil.version import version
 
 
-def main(argv=sys.argv[1:]):
+def main(argv=None):
     parser = argparse.ArgumentParser(description="The Toil Workflow Execution Service Server")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--debug", action="store_true", default=False)
@@ -19,8 +19,9 @@ def main(argv=sys.argv[1:]):
         print(version)
         exit(0)
 
-    app = connexion.FlaskApp(__name__, specification_dir='ga4gh_swagger_api_spec/')
-    backend = connexion.utils.get_function_from_name("api.ToilBackend")(args.opt)
+    # workflow execution service (WES) server
+    app = connexion.FlaskApp(__name__, specification_dir='ga4gh_wes_api_spec/')
+    backend = connexion.utils.get_function_from_name("toil.server.api.ToilBackend")(args.opt)
 
     def rs(x):
         return getattr(backend, x.split(".")[-1])

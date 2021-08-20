@@ -123,10 +123,3 @@ components:
       $ref: ./components/schemas/RunListResponse.yaml
     ErrorResponse:
       $ref: ./components/schemas/ErrorResponse.yaml
-
-
-
-
-
-
-
