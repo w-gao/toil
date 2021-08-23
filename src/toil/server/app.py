@@ -1,6 +1,8 @@
 import argparse
 import sys
 import connexion
+from connexion import Resolver
+from flask_cors import CORS
 
 from toil.version import version
 
@@ -19,14 +21,22 @@ def main(argv=None):
         print(version)
         exit(0)
 
-    # workflow execution service (WES) server
-    app = connexion.FlaskApp(__name__, specification_dir='ga4gh_wes_api_spec/')
+    app = connexion.FlaskApp(__name__,
+                             specification_dir='ga4gh_api_spec/',
+                             options={
+                                 # "swagger_ui": False
+                             })
+
+    # enable cross origin resource sharing
+    CORS(app.app)
+
+    # workflow execution service (WES) API
     backend = connexion.utils.get_function_from_name("toil.server.api.ToilBackend")(args.opt)
 
-    def rs(x):
-        return getattr(backend, x.split(".")[-1])
+    app.add_api('workflow_execution_service.swagger.yaml',
+                resolver=Resolver(function_resolver=backend.resolve_operation_id))
 
-    app.add_api('workflow_execution_service.swagger.yaml', resolver=connexion.resolver.Resolver(rs))
+    # start the development server
     app.run(port=args.port, debug=args.debug)
 
 

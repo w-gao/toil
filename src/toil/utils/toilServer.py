@@ -27,4 +27,4 @@ def main() -> None:
         raise
 
     from toil.server.app import main as start
-    start(sys.argv[1:])
+    start()

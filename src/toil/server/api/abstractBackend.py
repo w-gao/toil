@@ -2,6 +2,8 @@ import tempfile
 import json
 import os
 import logging
+from abc import abstractmethod, ABC
+from typing import Optional, List
 
 import connexion
 from werkzeug.utils import secure_filename
@@ -18,24 +20,93 @@ def visit(d, op):
             visit(i, op)
 
 
-class WESBackend:
+class WESBackend(ABC):
     """Stores and retrieves options.  Intended to be inherited."""
 
-    def __init__(self, opts):
+    def __init__(self, opts: List[str]):
         """Parse and store options as a list of tuples."""
         self.pairs = []
         for o in opts if opts else []:
             k, v = o.split("=", 1)
             self.pairs.append((k, v))
 
-    def getopt(self, p, default=None):
+    def resolve_operation_id(self, operation_id: str):
+        """
+        A function that maps an operationId defined in the OpenAPI or swagger
+        yaml file to a function.
+
+        :param operation_id: The operationId.
+        :returns: A function that should be called when the given endpoint is
+                  reached.
+        """
+        return getattr(self, operation_id.split(".")[-1])
+
+    @abstractmethod
+    def get_service_info(self) -> dict:
+        """
+        Get information about Workflow Execution Service.
+
+        GET /service-info
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_runs(self, page_size: Optional[int] = None, page_token: Optional[str] = None) -> dict:
+        """
+        List the workflow runs.
+
+        GET /runs
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def run_workflow(self) -> dict:
+        """
+        Run a workflow. This endpoint creates a new workflow run and returns
+        a `RunId` to monitor its progress.
+
+        POST /runs
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_run_log(self, run_id: str) -> dict:
+        """
+        Get detailed info about a workflow run.
+
+        GET /runs/{run_id}
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def cancel_run(self, run_id: str) -> dict:
+        """
+        Cancel a running workflow.
+
+        POST /runs/{run_id}/cancel
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_run_status(self, run_id: str) -> dict:
+        """
+        Get quick status info about a workflow run, returning a simple result
+        with the overall state of the workflow run.
+
+        GET /runs/{run_id}/status
+        """
+        raise NotImplementedError
+
+    # --- helper function ---
+
+    def getopt(self, p: str, default: Optional[str] = None) -> str:
         """Returns the first option value stored that matches p or default."""
         for k, v in self.pairs:
             if k == p:
                 return v
         return default
 
-    def getoptlist(self, p):
+    def getoptlist(self, p: str) -> List[str]:
         """Returns all option values stored that match p as a list."""
         optlist = []
         for k, v in self.pairs:
@@ -43,10 +114,12 @@ class WESBackend:
                 optlist.append(v)
         return optlist
 
-    def log_for_run(self, run_id, message):
+    def log_for_run(self, run_id: str, message: str) -> None:
         logging.info("Workflow %s: %s", run_id, message)
 
-    def collect_attachments(self, run_id=None):
+    def collect_attachments(self, run_id: Optional[str] = None) -> tuple:
+        """
+        """
         tempdir = tempfile.mkdtemp()
         body = {}
         has_attachments = False

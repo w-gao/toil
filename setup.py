@@ -51,6 +51,7 @@ def run_setup():
     enlighten = 'enlighten>=1.5.2, <2'
     wdlparse = 'wdlparse==0.1.0'
     connexion = 'connexion<3'
+    flask_cors = 'flask-cors==3.0.10'
 
     core_reqs = [
         dill,
@@ -90,7 +91,8 @@ def run_setup():
     wdl_reqs = [
         wdlparse]
     server_reqs = [
-        connexion]
+        connexion,
+        flask_cors]
 
     # htcondor is not supported by apple
     # this is tricky to conditionally support in 'all' due
