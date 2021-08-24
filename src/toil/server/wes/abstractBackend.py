@@ -1,66 +1,54 @@
-import functools
-import sys
 import tempfile
 import json
 import os
 import logging
 from abc import abstractmethod, ABC
-from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import connexion
 from werkzeug.utils import secure_filename
 
 
-def visit(d, op):
-    """Recursively call op(d) for all list subelements and dictionary 'values' that d may have."""
-    op(d)
-    if isinstance(d, list):
-        for i in d:
-            visit(i, op)
-    elif isinstance(d, dict):
-        for i in d.values():
-            visit(i, op)
-
-
-def handle_errors(func):
+class DefaultOptions:
     """
-    This decorator catches errors from the wrapped function and returns a JSON
-    formatted error message with the appropriate status code defined by the
-    GA4GH WES spec.
+    Stores and retrieves options.
     """
-
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except (TypeError, ValueError) as e:
-            # the request is malformed
-            return {"msg": str(e), "status_code": 400}, 400
-        except:
-            # an unexpected error occurred
-            exc_type, exc_value, exc_traceback = sys.exc_info()
-            return {"msg": f"{exc_type.__name__}: {exc_value}", "status_code": 500}, 500
-
-    return wrapper
-
-
-def get_iso_time() -> str:
-    """
-    Returns the current time in ISO 8601 format.
-    """
-    return datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-class WESBackend(ABC):
-    """Stores and retrieves options.  Intended to be inherited."""
-
     def __init__(self, opts: List[str]):
         """Parse and store options as a list of tuples."""
         self.pairs = []
         for o in opts if opts else []:
             k, v = o.split("=", 1)
             self.pairs.append((k, v))
+
+    def get_option(self, p: str, default: Optional[str] = None) -> str:
+        """
+        Returns the first option value stored that matches p or default.
+        """
+        for k, v in self.pairs:
+            if k == p:
+                return v
+        return default
+
+    def get_options(self, p: str) -> List[str]:
+        """
+        Returns all option values stored that match p as a list.
+        """
+        opt_list = []
+        for k, v in self.pairs:
+            if k == p:
+                opt_list.append(v)
+        return opt_list
+
+
+class WESBackend(ABC):
+    """
+    Represents a workflow execution service (WES) API backend. Intended to be
+    inherited. Subclasses should implement all abstract methods, which are
+    called when a user hits that endpoint.
+    """
+
+    def __init__(self, opts: List[str]):
+        self.opts = DefaultOptions(opts)
 
     def resolve_operation_id(self, operation_id: str):
         """
@@ -129,88 +117,77 @@ class WESBackend(ABC):
         """
         raise NotImplementedError
 
-    # --- helper function ---
+    # --- helper functions ---
 
-    def getopt(self, p: str, default: Optional[str] = None) -> str:
-        """Returns the first option value stored that matches p or default."""
-        for k, v in self.pairs:
-            if k == p:
-                return v
-        return default
-
-    def getoptlist(self, p: str) -> List[str]:
-        """Returns all option values stored that match p as a list."""
-        optlist = []
-        for k, v in self.pairs:
-            if k == p:
-                optlist.append(v)
-        return optlist
-
-    def log_for_run(self, run_id: str, message: str) -> None:
+    @staticmethod
+    def log_for_run(run_id: str, message: str) -> None:
         logging.info("Workflow %s: %s", run_id, message)
 
-    def collect_attachments(self, run_id: Optional[str] = None) -> tuple:
+    def collect_attachments(self, run_id: Optional[str] = None) -> Tuple[str, dict]:
         """
+        Collect the attachments that are provided along with the request.
+
+        :returns: The temporary directory where uploaded files are staged, and
+                  a dictionary of input parameters provided by the user.
         """
-        tempdir = tempfile.mkdtemp()
+        temp_dir = tempfile.mkdtemp()
         body = {}
         has_attachments = False
-        for k, ls in connexion.request.files.lists():
+        for key, ls in connexion.request.files.lists():
             try:
-                for v in ls:
-                    if k == "workflow_attachment":
-                        sp = v.filename.split("/")
+                for value in ls:
+                    # uploaded files that are required to execute the workflow
+                    if key == "workflow_attachment":
+
+                        # guard against maliciously constructed filenames
+                        sp = value.filename.split("/")
                         fn = []
                         for p in sp:
                             if p not in ("", ".", ".."):
                                 fn.append(secure_filename(p))
-                        dest = os.path.join(tempdir, *fn)
+                        dest = os.path.join(temp_dir, *fn)
                         if not os.path.isdir(os.path.dirname(dest)):
                             os.makedirs(os.path.dirname(dest))
-                        self.log_for_run(
-                            run_id,
-                            f"Staging attachment '{v.filename}' to '{dest}'",
-                        )
-                        v.save(dest)
+
+                        self.log_for_run(run_id, f"Staging attachment '{value.filename}' to '{dest}'")
+                        value.save(dest)
                         has_attachments = True
-                        body[k] = (
-                                "file://%s" % tempdir
-                        )  # Reference to temp working dir.
-                    elif k in ("workflow_params", "tags", "workflow_engine_parameters"):
-                        content = v.read()
-                        body[k] = json.loads(content.decode("utf-8"))
+                        body[key] = f"file://{temp_dir}"  # Reference to temp working dir.
+
+                    elif key in ("workflow_params", "tags", "workflow_engine_parameters"):
+                        content = value.read()
+                        body[key] = json.loads(content.decode("utf-8"))
                     else:
-                        body[k] = v.read().decode()
+                        body[key] = value.read().decode()
             except Exception as e:
-                raise ValueError(f"Error reading parameter '{k}': {e}")
-        for k, ls in connexion.request.form.lists():
+                raise ValueError(f"Error reading parameter '{key}': {e}")
+
+        # form data
+        for key, ls in connexion.request.form.lists():
             try:
-                for v in ls:
-                    if not v:
+                for value in ls:
+                    if not value:
                         continue
-                    if k in ("workflow_params", "tags", "workflow_engine_parameters"):
-                        body[k] = json.loads(v)
+                    if key in ("workflow_params", "tags", "workflow_engine_parameters"):
+                        body[key] = json.loads(value)
                     else:
-                        body[k] = v
+                        body[key] = value
             except Exception as e:
-                raise ValueError(f"Error reading parameter '{k}': {e}")
+                raise ValueError(f"Error reading parameter '{key}': {e}")
 
         if "workflow_url" in body:
             if ":" not in body["workflow_url"]:
                 if not has_attachments:
-                    raise ValueError(
-                        "Relative 'workflow_url' but missing 'workflow_attachment'"
-                    )
+                    raise ValueError("Relative 'workflow_url' but missing 'workflow_attachment'")
+
                 body["workflow_url"] = "file://%s" % os.path.join(
-                    tempdir, secure_filename(body["workflow_url"])
+                    temp_dir, secure_filename(body["workflow_url"])
                 )
-            self.log_for_run(
-                run_id, "Using workflow_url '%s'" % body.get("workflow_url")
-            )
+            self.log_for_run(run_id, "Using workflow_url '%s'" % body.get("workflow_url"))
         else:
             raise ValueError("Missing 'workflow_url' in submission")
 
         if "workflow_params" not in body:
             raise ValueError("Missing 'workflow_params' in submission")
 
-        return tempdir, body
+        return temp_dir, body

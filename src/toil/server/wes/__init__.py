@@ -1,12 +1,14 @@
 import json
 import os
+import signal
 import subprocess
 import logging
 import shutil
 
 from typing import List, Union
 
-from toil.server.wes.abstractBackend import WESBackend, get_iso_time
+from toil.server.wes.abstractBackend import WESBackend, DefaultOptions
+from toil.server.wes.utils import get_iso_time
 
 logging.basicConfig(level=logging.INFO)
 
@@ -34,6 +36,7 @@ class ToilWorkflow:
         self.start_time = os.path.join(self.work_dir, "starttime")
         self.end_time = os.path.join(self.work_dir, "endtime")
 
+        self.pid_file = os.path.join(self.work_dir, "pid")
         self.exit_code_file = os.path.join(self.work_dir, "exit_code")
         self.stat_complete_file = os.path.join(self.work_dir, "status_completed")
         self.stat_error_file = os.path.join(self.work_dir, "status_error")
@@ -75,7 +78,7 @@ class ToilWorkflow:
 
         return options
 
-    def write_workflow(self, request, opts, cwd, wftype="cwl"):
+    def write_workflow(self, request, opts: DefaultOptions, cwd, wftype="cwl"):
         """
         Writes a cwl, wdl, or python file as appropriate from the request
         dictionary.
@@ -96,7 +99,7 @@ class ToilWorkflow:
             os.symlink(self.input_json, os.path.join(cwd, "wes_input.json"))
         self.input_json = os.path.join(cwd, "wes_input.json")
 
-        extra_options = self.sort_toil_options(opts.getoptlist("extra"))
+        extra_options = self.sort_toil_options(opts.get_options("extra"))
         if wftype == "cwl":
             command_args = (
                 ["toil-cwl-runner"] + extra_options + [workflow_url, self.input_json]
@@ -114,12 +117,6 @@ class ToilWorkflow:
 
         return command_args
 
-    def write_json(self, request_dict):
-        input_json = os.path.join(self.work_dir, "input.json")
-        with open(input_json, "w") as f:
-            json.dump(request_dict["workflow_params"], f)
-        return input_json
-
     def call_cmd(self, cmd: Union[List[str], str], cwd: str) -> int:
         """
         Calls a command with Popen. Writes stdout, stderr, and the command to
@@ -133,7 +130,7 @@ class ToilWorkflow:
         :return: The exit code of the command.
         """
         with open(self.cmd_file, "w") as f:
-            f.write(' '.join(cmd))
+            f.write(" ".join(cmd))
 
         with open(self.stdout_file, "w") as stdout, open(self.stderr_file, "w") as stderr:
             logging.info("Calling: " + " ".join(cmd))
@@ -143,10 +140,27 @@ class ToilWorkflow:
                                        close_fds=True,
                                        cwd=cwd)
 
+        # write pid to file
+        with open(self.pid_file, "w") as f:
+            f.write(str(process.pid))
+
+        # block until an exit code is received
         return process.wait()
 
     def cancel(self):
-        pass
+        """
+        Cancel a workflow run by sending a SIGTERM to the process.
+        """
+        pid = self.fetch(self.pid_file)
+
+        if not pid:
+            raise RuntimeError("pid file is not found.")
+
+        # signal an interrupt to kill the process gently
+        try:
+            os.kill(int(pid), signal.SIGINT)
+        except ProcessLookupError:
+            pass
 
     def fetch(self, filename: str, default_value: str = "") -> str:
         """
@@ -160,8 +174,9 @@ class ToilWorkflow:
 
     def get_log(self) -> dict:
         """
+        Get detailed information about a current workflow run.
         """
-        state, exit_code = self.getstate()
+        state = self.get_state()
 
         with open(self.request_json, "r") as f:
             request = json.load(f)
@@ -170,6 +185,7 @@ class ToilWorkflow:
             self.job_store = f.read()
 
         stderr = self.fetch(self.stderr_file)
+        exit_code = int(self.fetch(self.exit_code_file, "1"))
         start_time = self.fetch(self.start_time)
         end_time = self.fetch(self.end_time)
         cmd = [self.fetch(self.cmd_file)]
@@ -196,6 +212,7 @@ class ToilWorkflow:
                 "cmd": cmd,
                 "start_time": start_time,
                 "end_time": end_time,
+                # TODO: stdout and stderr should be a URL that points to the output file, not the actual contents.
                 "stdout": "",
                 "stderr": stderr,
                 "exit_code": exit_code,
@@ -204,37 +221,39 @@ class ToilWorkflow:
             "outputs": output_obj,
         }
 
-    def run(self, request, tempdir, opts):
+    def run(self, request: dict, tempdir: str, opts: DefaultOptions):
         """
-        Constructs a command to run a cwl/json from requests and opts,
-        runs it, and deposits the outputs in outdir.
+        Constructs a command to run a cwl/json from requests and opts, runs it,
+        and deposits the outputs in outdir.
 
         Runner:
-        opts.getopt("runner", default="cwl-runner")
+            opts.get_option("runner", default="cwl-runner")
 
         CWL (url):
-        request["workflow_url"] == a url to a cwl file
+            request["workflow_url"] == a url to a cwl file
         or
-        request["workflow_attachment"] == input cwl text (written to a file and a url constructed for that file)
+            request["workflow_attachment"] == input cwl text (written to a file and a url constructed for that file)
 
         JSON File:
-        request["workflow_params"] == input json text (to be written to a file)
+            request["workflow_params"] == input json text (to be written to a file)
 
         :param dict request: A dictionary containing the cwl/json information.
-        :param str tempdir: Folder where input files have been staged and the cwd to run at.
-        :param wes_service.util.WESBackend opts: contains the user's arguments;
-                                                 specifically the runner and runner options
+        :param str tempdir: Folder where input files have been staged and the
+                            cwd to run at.
+        :param DefaultOptions opts: contains the user's arguments; specifically
+                                    the runner and runner options.
+
         :return: {"run_id": self.run_id, "state": state}
         """
-        wftype = request["workflow_type"].lower().strip()
+        wf_type = request["workflow_type"].lower().strip()
         version = request["workflow_type_version"]
 
-        if version != "v1.0" and wftype == "cwl":
+        if version != "v1.0" and wf_type == "cwl":
             raise RuntimeError(
                 'workflow_type "cwl" requires '
                 '"workflow_type_version" to be "v1.0": ' + str(version)
             )
-        if version != "2.7" and wftype == "py":
+        if version != "2.7" and wf_type == "py":
             raise RuntimeError(
                 'workflow_type "py" requires '
                 '"workflow_type_version" to be "2.7": ' + str(version)
@@ -249,7 +268,7 @@ class ToilWorkflow:
         with open(self.input_json, "w") as temp:
             json.dump(request["workflow_params"], temp)
 
-        command_args = self.write_workflow(request, opts, tempdir, wftype=wftype)
+        command_args = self.write_workflow(request, opts, tempdir, wftype=wf_type)
         exit_code = self.call_cmd(command_args, tempdir)
 
         with open(self.end_time, "w") as f:
@@ -257,36 +276,37 @@ class ToilWorkflow:
         with open(self.exit_code_file, "w") as f:
             f.write(str(exit_code))
 
-        return self.getstatus()
+        return self.get_status()
 
-    def getstate(self):
+    def get_state(self) -> str:
         """
-        Returns QUEUED,          -1
-                INITIALIZING,    -1
-                RUNNING,         -1
-                COMPLETE,         0
-                or
-                EXECUTOR_ERROR, 255
+        Get the state of the current workflow run. Can be one of the following:
+            QUEUED,
+            INITIALIZING,
+            RUNNING,
+            COMPLETE,
+            or
+            EXECUTOR_ERROR.
         """
         # the job store never existed
         if not os.path.exists(self.job_store_file):
             logging.info("Workflow " + self.run_id + ": QUEUED")
-            return "QUEUED", -1
+            return "QUEUED"
 
         # completed earlier
         if os.path.exists(self.stat_complete_file):
             logging.info("Workflow " + self.run_id + ": COMPLETE")
-            return "COMPLETE", 0
+            return "COMPLETE"
 
         # errored earlier
         if os.path.exists(self.stat_error_file):
             logging.info("Workflow " + self.run_id + ": EXECUTOR_ERROR")
-            return "EXECUTOR_ERROR", 255
+            return "EXECUTOR_ERROR"
 
         # the workflow is staged but has not run yet
         if not os.path.exists(self.stderr_file):
             logging.info("Workflow " + self.run_id + ": INITIALIZING")
-            return "INITIALIZING", -1
+            return "INITIALIZING"
 
         # TODO: Query with "toil status"
         completed = False
@@ -296,20 +316,22 @@ class ToilWorkflow:
                 if "Traceback (most recent call last)" in line:
                     logging.info("Workflow " + self.run_id + ": EXECUTOR_ERROR")
                     open(self.stat_error_file, "a").close()
-                    return "EXECUTOR_ERROR", 255
+                    return "EXECUTOR_ERROR"
                 # run can complete successfully but fail to upload outputs to cloud buckets
                 # so save the completed status and make sure there was no error elsewhere
                 if "Finished toil run successfully." in line:
                     completed = True
+                    break
         if completed:
             logging.info("Workflow " + self.run_id + ": COMPLETE")
             open(self.stat_complete_file, "a").close()
-            return "COMPLETE", 0
+            return "COMPLETE"
 
         logging.info("Workflow " + self.run_id + ": RUNNING")
-        return "RUNNING", -1
+        return "RUNNING"
 
-    def getstatus(self):
-        state, exit_code = self.getstate()
-
-        return {"run_id": self.run_id, "state": state}
+    def get_status(self) -> dict:
+        """
+        Get the status of the workflow run as a dict.
+        """
+        return {"run_id": self.run_id, "state": self.get_state()}

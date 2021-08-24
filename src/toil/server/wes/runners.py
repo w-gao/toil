@@ -30,10 +30,3 @@ class WDLRunner(WorkflowRunner):
     @classmethod
     def supported_versions(cls) -> List[str]:
         return ["draft-2", "1.0"]
-
-
-WES_WORKFLOW_RUNNERS = {
-    "py": PythonRunner,
-    "cwl": CWLRunner,
-    "wdl": WDLRunner
-}

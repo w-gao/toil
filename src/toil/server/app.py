@@ -37,7 +37,7 @@ def main(argv=None):
                 resolver=connexion.Resolver(backend.resolve_operation_id))  # noqa
 
     # start the development server
-    app.run(port=args.port, debug=args.debug)
+    app.run(port=args.port, debug=False)
 
 
 if __name__ == "__main__":
