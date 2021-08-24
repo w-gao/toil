@@ -1,8 +1,11 @@
+import functools
+import sys
 import tempfile
 import json
 import os
 import logging
 from abc import abstractmethod, ABC
+from datetime import datetime
 from typing import Optional, List
 
 import connexion
@@ -18,6 +21,35 @@ def visit(d, op):
     elif isinstance(d, dict):
         for i in d.values():
             visit(i, op)
+
+
+def handle_errors(func):
+    """
+    This decorator catches errors from the wrapped function and returns a JSON
+    formatted error message with the appropriate status code defined by the
+    GA4GH WES spec.
+    """
+
+    @functools.wraps(func)
+    def wrapper(*args, **kwargs):
+        try:
+            return func(*args, **kwargs)
+        except (TypeError, ValueError) as e:
+            # the request is malformed
+            return {"msg": str(e), "status_code": 400}, 400
+        except:
+            # an unexpected error occurred
+            exc_type, exc_value, exc_traceback = sys.exc_info()
+            return {"msg": f"{exc_type.__name__}: {exc_value}", "status_code": 500}, 500
+
+    return wrapper
+
+
+def get_iso_time() -> str:
+    """
+    Returns the current time in ISO 8601 format.
+    """
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 class WESBackend(ABC):
@@ -142,7 +174,7 @@ class WESBackend(ABC):
                         v.save(dest)
                         has_attachments = True
                         body[k] = (
-                            "file://%s" % tempdir
+                                "file://%s" % tempdir
                         )  # Reference to temp working dir.
                     elif k in ("workflow_params", "tags", "workflow_engine_parameters"):
                         content = v.read()

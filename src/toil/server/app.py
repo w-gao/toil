@@ -1,7 +1,6 @@
 import argparse
 import sys
 import connexion
-from connexion import Resolver
 from flask_cors import CORS
 
 from toil.version import version
@@ -31,10 +30,11 @@ def main(argv=None):
     CORS(app.app)
 
     # workflow execution service (WES) API
-    backend = connexion.utils.get_function_from_name("toil.server.api.ToilBackend")(args.opt)
+    from toil.server.wes.toilBackend import ToilBackend
+    backend = ToilBackend(args.opt)
 
     app.add_api('workflow_execution_service.swagger.yaml',
-                resolver=Resolver(function_resolver=backend.resolve_operation_id))
+                resolver=connexion.Resolver(backend.resolve_operation_id))  # noqa
 
     # start the development server
     app.run(port=args.port, debug=args.debug)
