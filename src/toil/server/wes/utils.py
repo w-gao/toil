@@ -14,7 +14,7 @@
 import functools
 import logging
 from datetime import datetime
-
+from typing import Callable, Any
 
 logger = logging.getLogger(__name__)
 
@@ -23,23 +23,23 @@ class WorkflowNotFoundError(Exception):
     """
     Raised when the user specified run ID is not found.
     """
-    def __init__(self):
+    def __init__(self) -> None:
         super(WorkflowNotFoundError, self).__init__("The requested workflow run wasn't found.")
 
 
-def handle_errors(func):
+def handle_errors(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     This decorator catches errors from the wrapped function and returns a JSON
     formatted error message with the appropriate status code defined by the
     GA4GH WES spec.
     """
 
-    def error(msg, code: int = 500):
+    def error(msg, code: int = 500):  # type: ignore
         logger.exception(f"Exception raised when calling '{func.__name__}()':")
         return {"msg": str(msg), "status_code": code}, code
 
     @functools.wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args, **kwargs):  # type: ignore
         try:
             return func(*args, **kwargs)
         except (TypeError, ValueError) as e:

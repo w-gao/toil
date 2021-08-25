@@ -3,9 +3,9 @@ import json
 import os
 import logging
 from abc import abstractmethod, ABC
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Dict, Any
 
-import connexion
+import connexion  # type: ignore
 from werkzeug.utils import secure_filename
 
 
@@ -20,7 +20,7 @@ class DefaultOptions:
             k, v = o.split("=", 1)
             self.pairs.append((k, v))
 
-    def get_option(self, p: str, default: Optional[str] = None) -> str:
+    def get_option(self, p: str, default: Optional[str] = None) -> Optional[str]:
         """
         Returns the first option value stored that matches p or default.
         """
@@ -43,14 +43,18 @@ class DefaultOptions:
 class WESBackend(ABC):
     """
     Represents a workflow execution service (WES) API backend. Intended to be
-    inherited. Subclasses should implement all abstract methods, which are
-    called when a user hits that endpoint.
+    inherited. Subclasses should implement all abstract methods to handle user
+    requests when they hit different endpoints.
     """
 
     def __init__(self, opts: List[str]):
+        """
+        :param opts: A list of default options that should be considered when
+                     starting all workflows.
+        """
         self.opts = DefaultOptions(opts)
 
-    def resolve_operation_id(self, operation_id: str):
+    def resolve_operation_id(self, operation_id: str) -> Any:
         """
         A function that maps an operationId defined in the OpenAPI or swagger
         yaml file to a function.
@@ -62,7 +66,7 @@ class WESBackend(ABC):
         return getattr(self, operation_id.split(".")[-1])
 
     @abstractmethod
-    def get_service_info(self) -> dict:
+    def get_service_info(self) -> Dict[str, Any]:
         """
         Get information about Workflow Execution Service.
 
@@ -71,7 +75,7 @@ class WESBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def list_runs(self, page_size: Optional[int] = None, page_token: Optional[str] = None) -> dict:
+    def list_runs(self, page_size: Optional[int] = None, page_token: Optional[str] = None) -> Dict[str, Any]:
         """
         List the workflow runs.
 
@@ -80,7 +84,7 @@ class WESBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def run_workflow(self) -> dict:
+    def run_workflow(self) -> Dict[str, str]:
         """
         Run a workflow. This endpoint creates a new workflow run and returns
         a `RunId` to monitor its progress.
@@ -90,7 +94,7 @@ class WESBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_run_log(self, run_id: str) -> dict:
+    def get_run_log(self, run_id: str) -> Dict[str, Any]:
         """
         Get detailed info about a workflow run.
 
@@ -99,7 +103,7 @@ class WESBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def cancel_run(self, run_id: str) -> dict:
+    def cancel_run(self, run_id: str) -> Dict[str, str]:
         """
         Cancel a running workflow.
 
@@ -108,7 +112,7 @@ class WESBackend(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_run_status(self, run_id: str) -> dict:
+    def get_run_status(self, run_id: str) -> Dict[str, str]:
         """
         Get quick status info about a workflow run, returning a simple result
         with the overall state of the workflow run.
@@ -120,10 +124,10 @@ class WESBackend(ABC):
     # --- helper functions ---
 
     @staticmethod
-    def log_for_run(run_id: str, message: str) -> None:
+    def log_for_run(run_id: Optional[str], message: str) -> None:
         logging.info("Workflow %s: %s", run_id, message)
 
-    def collect_attachments(self, run_id: Optional[str] = None) -> Tuple[str, dict]:
+    def collect_attachments(self, run_id: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
         """
         Collect the attachments that are provided along with the request.
 

@@ -41,6 +41,7 @@ def main():
         'src/toil/wdl/versions/draft2.py',
         'src/toil/wdl/versions/v1.py',
         'src/toil/wdl/versions/dev.py',
+        'src/toil/server/wes/toilBackend.py',
         'src/toil/provisioners/clusterScaler.py',
         'src/toil/provisioners/abstractProvisioner.py',
         'src/toil/provisioners/gceProvisioner.py',

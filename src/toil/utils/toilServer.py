@@ -11,20 +11,28 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Start a Toil WES server."""
+"""CLI entry for the Toil WES server."""
+import argparse
 import logging
-import sys
 
+from toil.server.app import start_dev_server
+from toil.version import version
 
 logger = logging.getLogger(__name__)
 
 
 def main() -> None:
-    try:
-        import connexion
-    except ImportError:
-        logger.warning("Required dependencies not found. Make sure to install Toil with extras=[server].")
-        raise
+    parser = argparse.ArgumentParser(description="The Toil Workflow Execution Service Server")
+    parser.add_argument("--port", type=int, default=8080)
+    parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--version", action='version', version=version)
+    parser.add_argument("--opt", "-o", type=str, action="append",
+                        help="Example: '--opt runner=cwltoil --opt extra=--logLevel=CRITICAL' "
+                             "or '--opt extra=--workDir=/'.  Accepts multiple values.")
+    args = parser.parse_args()
 
-    from toil.server.app import main as start
-    start()
+    if args.debug:
+        start_dev_server(args)
+    else:
+        # TODO: start a production WSGI server
+        start_dev_server(args)

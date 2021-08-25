@@ -1,8 +1,11 @@
+from time import sleep
+
 from toil.common import Toil
 from toil.job import Job
 
 
-def helloWorld(message, memory="1G", cores=1, disk="1G"):
+def helloWorld(message: str, memory: str = "1G", cores: int = 1, disk: str = "1G") -> str:
+    sleep(20)
     return "Hello, world!, here's a message: %s" % message
 
 
