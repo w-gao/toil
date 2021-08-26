@@ -125,7 +125,10 @@ class WESBackend(ABC):
 
     @staticmethod
     def log_for_run(run_id: Optional[str], message: str) -> None:
-        logging.info("Workflow %s: %s", run_id, message)
+        if run_id:
+            logging.info("Workflow %s: %s", run_id, message)
+        else:
+            logging.info(message)
 
     def collect_attachments(self, run_id: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
         """
@@ -134,6 +137,7 @@ class WESBackend(ABC):
         :returns: The temporary directory where uploaded files are staged, and
                   a dictionary of input parameters provided by the user.
         """
+        # TODO: make sure this is cleaned up
         temp_dir = tempfile.mkdtemp()
         body = {}
         has_attachments = False
