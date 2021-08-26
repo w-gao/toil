@@ -6,7 +6,7 @@ import signal
 import subprocess
 import uuid
 from multiprocessing import Process
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Dict, Any, Generator, Tuple, Union
 
 from toil.server.wes.abstractBackend import WESBackend, DefaultOptions
 from toil.server.wes.utils import handle_errors, WorkflowNotFoundError, get_iso_time
@@ -17,167 +17,340 @@ logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-class ToilWorkflow:
-    def __init__(self, run_id: str):
+class WESWorkflow:
+    """
+    Represents a single WES workflow of a particular workflow type. This class
+    is responsible for sorting out input arguments and constructing a shell
+    command for the given workflow to run.
+    """
+    def __init__(self, run_id: str, version: str, workflow_url: str,  input_json: str,
+                 options: List[str], temp_dir: str, out_dir: str) -> None:
         """
-        Represents a toil workflow.
+        :param run_id: The run id.
+        :param version: The version of the workflow type provided by the user.
 
-        :param run_id: A uuid string.  Used to name the folder that contains
-                       all of the files containing this particular workflow
-                       instance's information.
+        :param workflow_url: The URL to the workflow file.
+        :param input_json: The URL to the input JSON file.
+        :param options: A list of user defined options that should be appended
+                        to the shell command run.
+        :param temp_dir: The temporary directory where attachments are staged
+                         and the workflow should be executed.
+        :param out_dir: The output directory where we expect workflow outputs
+                        to be.
         """
+        if version not in self.supported_versions():
+            raise ValueError(f"Unsupported workflow version '{version}' for {self.__class__.__name__}.")
+        self.version = version
         self.run_id = run_id
+        self.cloud = False
 
-        self.work_dir = os.path.join(os.getcwd(), "workflows", self.run_id)
-        self.out_dir = os.path.join(self.work_dir, "outdir")
-        if not os.path.exists(self.out_dir):
-            os.makedirs(self.out_dir)
+        self.workflow_url = workflow_url
+        self.input_json = input_json
+        self.options = options
 
-        # execution
-        self.stdout_file = os.path.join(self.work_dir, "stdout")
-        self.stderr_file = os.path.join(self.work_dir, "stderr")
+        self.temp_dir = temp_dir
+        self.out_dir = out_dir
 
-        self.start_time = os.path.join(self.work_dir, "starttime")
-        self.end_time = os.path.join(self.work_dir, "endtime")
+        default_job_store = "file:" + os.path.join(temp_dir, "toiljobstore")
+        self.job_store: str = default_job_store
 
-        self.pid_file = os.path.join(self.work_dir, "pid")
-        self.exit_code_file = os.path.join(self.work_dir, "exit_code")
-        self.stat_complete_file = os.path.join(self.work_dir, "status_completed")
-        self.stat_error_file = os.path.join(self.work_dir, "status_error")
-
-        # workflow information
-        self.cmd_file = os.path.join(self.work_dir, "cmd")
-        self.job_store_file = os.path.join(self.work_dir, "jobstore")
-
-        self.request_json = os.path.join(self.work_dir, "request.json")
-        self.input_json = os.path.join(self.work_dir, "wes_input.json")
-
-        self.job_store_default = "file:" + os.path.join(self.work_dir, "toiljobstore")
-        self.job_store: Optional[str] = None
-
-    def sort_toil_options(self, wf_type: str, options: List[str]) -> List[str]:
+    @classmethod
+    def supported_versions(cls) -> List[str]:
         """
+        Get all the workflow versions that this runner implementation supports.
         """
-        # TODO: this is dependent on the workflow type
-        #  e.g.: Toil workflows don't take the --jobStore argument. They also don't have --outDir.
+        raise NotImplementedError
 
-        # determine job store and set a new default if the user did not set one
-        cloud = False
-        for e in options:
-            if e.startswith("--jobStore="):
-                self.job_store = e[11:]
-                if self.job_store.startswith(("aws", "google", "azure")):
-                    cloud = True
-                if wf_type == "py":
-                    options.remove(e)
-            if e.startswith(("--outdir=", "-o=")):
-                options.remove(e)
+    def prepare(self) -> None:
+        """ Prepare the workflow run."""
+        self.link_files()
+        self.sort_options()
 
-        if not cloud:
-            if wf_type in ('cwl', 'wdl'):
-                options.append("--outdir=" + self.out_dir)
-            else:
-                # TODO: find a way to communicate the outDir to the Toil workflow
-                pass
-        if not self.job_store:
-            if wf_type in ('cwl', 'wdl'):
-                options.append("--jobStore=" + self.job_store_default)
-            else:
-                # append the positional jobStore argument at the end for Python workflows
-                options.append(self.job_store_default)
-
-            self.job_store = self.job_store_default
-
-        # store the job store location
-        with open(self.job_store_file, "w") as f:
-            f.write(self.job_store)
-
-        return options
-
-    def write_workflow(self,
-                       request: Dict[str, Any],
-                       opts: DefaultOptions,
-                       temp_dir: str,
-                       wf_type: str = "cwl") -> List[str]:
-        """
-        Writes a cwl, wdl, or python file as appropriate from the request
-        dictionary.
-        """
-
-        workflow_url = request["workflow_url"]
-
-        # link the cwl and json into the cwd
-        # TODO: users shouldn't be able to access the server's filesystem, right?
-        if workflow_url.startswith("file://"):
-            try:
-                os.link(workflow_url[7:], os.path.join(temp_dir, "wes_workflow." + wf_type))
-            except OSError:
-                os.symlink(workflow_url[7:], os.path.join(temp_dir, "wes_workflow." + wf_type))
-            workflow_url = os.path.join(temp_dir, "wes_workflow." + wf_type)
-
+    @staticmethod
+    def _link_file(src: str, dest: str) -> None:
         try:
-            os.link(self.input_json, os.path.join(temp_dir, "wes_input.json"))
+            os.link(src, dest)
         except OSError:
-            os.symlink(self.input_json, os.path.join(temp_dir, "wes_input.json"))
-        self.input_json = os.path.join(temp_dir, "wes_input.json")
+            os.symlink(src, dest)
 
-        extra_options = self.sort_toil_options(wf_type, opts.get_options("extra"))
+    def link_files(self) -> None:
+        """Link the workflow and its JSON input file to the self.temp_dir."""
 
-        if wf_type == "cwl":
-            command_args = (
-                ["toil-cwl-runner"] + extra_options + [workflow_url, self.input_json]
-            )
-        elif wf_type == "wdl":
-            command_args = (
-                ["toil-wdl-runner"] + extra_options + [workflow_url, self.input_json]
-            )
-        elif wf_type == "py":
-            command_args = ["python"] + [workflow_url] + extra_options
+        # link the workflow file into the cwd
+        if self.workflow_url.startswith("file://"):
+            dest = os.path.join(self.temp_dir, "wes_workflow" + os.path.splitext(self.workflow_url)[1])
+            self._link_file(src=self.workflow_url[7:], dest=dest)
+            self.workflow_url = dest
+
+        # link the JSON file into the cwd
+        dest = os.path.join(self.temp_dir, "wes_input.json")
+        self._link_file(src=self.input_json, dest=dest)
+        self.input_json = dest
+
+    def sort_options(self) -> None:
+        """
+        Given the user request, sort the command line arguments in the order
+        that can be recognized by the runner.
+        """
+        # determine job store and set a new default if the user did not set one
+        for opt in self.options:
+            if opt.startswith("--jobStore="):
+                self.job_store = opt[11:]
+                if self.job_store.startswith(("aws", "google", "azure")):
+                    self.cloud = True
+                self.options.remove(opt)
+            if opt.startswith(("--outdir=", "-o=")):
+                # remove user-defined output directories
+                self.options.remove(opt)
+
+    def construct_command(self) -> List[str]:
+        """
+        Return a list of shell commands that should be executed in order to
+        complete this workflow run.
+        """
+        raise NotImplementedError
+
+
+class PythonWorkflow(WESWorkflow):
+    """ Toil workflows."""
+
+    @classmethod
+    def supported_versions(cls) -> List[str]:
+        return ["3.6", "3.7", "3.8", "3.9"]
+
+    def sort_options(self) -> None:
+        super(PythonWorkflow, self).sort_options()
+
+        if not self.cloud:
+            # TODO: find a way to communicate the out_dir to the Toil workflow
+            pass
+
+        # append the positional jobStore argument at the end for Toil workflows
+        self.options.append(self.job_store)
+
+    def construct_command(self) -> List[str]:
+        return ["python"] + [self.workflow_url] + self.options
+
+
+class CWLWorkflow(WESWorkflow):
+    """ CWL workflows that are run with toil-cwl-runner."""
+
+    @classmethod
+    def supported_versions(cls) -> List[str]:
+        return ["v1.0", "v1.1", "v1.2"]
+
+    def sort_options(self) -> None:
+        super(CWLWorkflow, self).sort_options()
+
+        if not self.cloud:
+            self.options.append("--outdir=" + self.out_dir)
+        self.options.append("--jobStore=" + self.job_store)
+
+    def construct_command(self) -> List[str]:
+        return ["toil-cwl-runner"] + self.options + [self.workflow_url, self.input_json]
+
+
+class WDLWorkflow(CWLWorkflow):
+    """ WDL workflows that are run with toil-wdl-runner."""
+
+    @classmethod
+    def supported_versions(cls) -> List[str]:
+        return ["draft-2", "1.0"]
+
+    def construct_command(self) -> List[str]:
+        return ["toil-wdl-runner"] + self.options + [self.workflow_url, self.input_json]
+
+
+class ToilWorkflowExecutor:
+    """
+    Responsible for creating and executing submitted workflows.
+
+    Local implementation -
+    Interacts with the workflows/ directory to store and retrieve information
+    associated with all the workflow runs through the filesystem.
+    """
+
+    def __init__(self) -> None:
+        self.work_dir = os.path.join(os.getcwd(), "workflows")
+        self.workflow_types = {
+            'py': PythonWorkflow,
+            'cwl': CWLWorkflow,
+            'wdl': WDLWorkflow
+        }
+
+    def _join_work_dir(self, run_id: str, *args: str) -> str:
+        """ Returns the full path to the given file of a run."""
+        return os.path.join(self.work_dir, run_id, *args)
+
+    def fetch(self, run_id: str, filename: str, default: Optional[str] = None) -> Optional[str]:
+        """
+        Returns the contents of the given file. If the file does not exist, the
+        default value is returned.
+        """
+        path = self._join_work_dir(run_id, filename)
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return f.read()
+        return default
+
+    def fetch_json(self, run_id: str, filename: str, default: Optional[Any] = None) -> Optional[Any]:
+        """ Returns the parsed JSON of the given file."""
+        path = self._join_work_dir(run_id, filename)
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+        return default
+
+    def write(self, run_id: str, filename: str, content: str) -> None:
+        """ Write a file to the directory of the given run."""
+        with open(self._join_work_dir(run_id, filename), "w") as f:
+            f.write(content)
+
+    def write_json(self, run_id: str, filename: str, contents: Any) -> None:
+        """ Write a JSON file to the directory of the given run."""
+        with open(self._join_work_dir(run_id, filename), "w") as f:
+            json.dump(contents, f)
+
+    def assert_exists(self, run_id: str) -> None:
+        """ Raises an error if the given workflow run does not exist."""
+        if not os.path.isdir(self._join_work_dir(run_id)):
+            raise WorkflowNotFoundError
+
+    def get_state(self, run_id: str) -> str:
+        """ Returns the state of the given run."""
+        return self.fetch(run_id, "state") or "UNKNOWN"
+
+    def set_state(self, run_id: str, state: str) -> None:
+        """ Set the state for a run."""
+        if state not in ("QUEUED", "INITIALIZING", "RUNNING", "COMPLETE", "EXECUTOR_ERROR", "SYSTEM_ERROR",
+                         "CANCELED", "CANCELING"):
+            raise ValueError(f"Invalid state for run: {state}")
+
+        logger.info(f"Workflow {run_id}: {state}")
+        self.write(run_id, "state", state)
+
+    def get_runs(self) -> Generator[Tuple[str, str], None, None]:
+        """ A generator of a list of run ids and their state."""
+        if not os.path.exists(self.work_dir):
+            return
+
+        for run_id in os.listdir(self.work_dir):
+            if os.path.isdir(self._join_work_dir(run_id)):
+                yield run_id, self.get_state(run_id)
+
+    def set_up_run(self, run_id: str) -> None:
+        """
+        Calls when a new workflow run has been requested. This creates the
+        necessary files needed for this workflow to run.
+        """
+        # make directory for the run
+        out_dir = self._join_work_dir(run_id, "out_dir")
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir)
+
+        self.set_state(run_id, "QUEUED")
+
+    def create_workflow(self,
+                        run_id: str,
+                        temp_dir: str,
+                        request: Dict[str, Any],
+                        options: DefaultOptions) -> WESWorkflow:
+        """
+                Creates a WESWorkflow object from the user request.
+
+                :param run_id: The run id.
+                :param temp_dir: The temporary directory where attachments are staged
+                                 and the workflow should be executed.
+                :param request: The request dictionary containing user input parameters
+                                for the workflow execution.
+                :param options: A list of default options that should be attached when
+                                starting the workflow.
+                """
+        wf_type = request["workflow_type"].lower().strip()
+        version = request["workflow_type_version"]
+
+        wf = self.workflow_types.get(wf_type)
+        if not wf:
+            raise RuntimeError(f"workflow_type '{wf_type}' is not supported.")
+        if version not in wf.supported_versions():
+            raise RuntimeError("workflow_type '{}' requires 'workflow_type_version' to be one of '{}'.  Got '{}'"
+                               "instead.".format(wf_type, str(wf.supported_versions()), version))
+
+        logger.info(f"Beginning Toil Workflow ID: {run_id}")
+        self.set_state(run_id, "INITIALIZING")
+
+        self.write(run_id, "starttime", get_iso_time())
+        self.write_json(run_id, "request.json", request)
+        self.write_json(run_id, "wes_input.json", request["workflow_params"])
+
+        parameters = request.get("workflow_engine_parameters", None)
+        if parameters:
+            # TODO: user supplied options
+            pass
+        options = options.get_options("extra")
+
+        # create an instance of the workflow
+        return wf(run_id=run_id,
+                  version=version,
+                  workflow_url=request["workflow_url"],
+                  input_json=self._join_work_dir(run_id, "wes_input.json"),
+                  options=options,
+                  temp_dir=temp_dir,
+                  out_dir=self._join_work_dir(run_id, "out_dir"))
+
+    def run_workflow(self, workflow: WESWorkflow) -> None:
+        """ Runs the workflow in a separate multiprocessing Process."""
+        run_id = workflow.run_id
+        temp_dir = workflow.temp_dir
+
+        # prepare the run
+        workflow.prepare()
+        # store the jobStore location so we can access the output files later
+        self.write(run_id, "job_store", workflow.job_store)
+
+        self.set_state(run_id, "RUNNING")
+
+        exit_code = self.call_cmd(run_id=run_id,
+                                  cmd=workflow.construct_command(),
+                                  cwd=temp_dir)
+
+        self.write(run_id, "endtime", get_iso_time())
+        self.write(run_id, "exit_code", str(exit_code))
+
+        if exit_code == 0:
+            self.set_state(run_id, "COMPLETE")
         else:
-            raise RuntimeError(
-                'workflow_type is not "cwl", "wdl", or "py": ' + str(wf_type)
-            )
+            # non-zero exit code indicates failure
+            self.set_state(run_id, "EXECUTOR_ERROR")
 
-        return command_args
-
-    def call_cmd(self, cmd: Union[List[str], str], cwd: str) -> int:
+    def call_cmd(self, run_id: str, cmd: Union[List[str], str], cwd: str) -> int:
         """
         Calls a command with Popen. Writes stdout, stderr, and the command to
-        separate files.
+        separate files. This is a blocking call.
 
-        This is a blocking call.
-
-        :param cmd: A string or array of strings.
-        :param cwd: A path to the working directory.
-
-        :return: The exit code of the command.
+        :returns: The exit code of the command.
         """
-        with open(self.cmd_file, "w") as f:
-            f.write(" ".join(cmd))
+        self.write(run_id, "cmd", " ".join(cmd))
 
-        with open(self.stdout_file, "w") as stdout, open(self.stderr_file, "w") as stderr:
+        stdout_f = self._join_work_dir(run_id, "stdout")
+        stderr_f = self._join_work_dir(run_id, "stderr")
+
+        with open(stdout_f, "w") as stdout, open(stderr_f, "w") as stderr:
             logger.info("Calling: " + " ".join(cmd))
-            process = subprocess.Popen(cmd,
-                                       stdout=stdout,
-                                       stderr=stderr,
-                                       close_fds=True,
-                                       cwd=cwd)
+            process = subprocess.Popen(cmd, stdout=stdout, stderr=stderr, close_fds=True, cwd=cwd)
 
-        # write pid to file
-        with open(self.pid_file, "w") as f:
-            f.write(str(process.pid))
-
-        # block until an exit code is received
+        self.write(run_id, "pid", str(process.pid))
         return process.wait()
 
-    def cancel(self) -> bool:
-        """
-        Cancel a workflow run by sending a SIGTERM to the process.
-        """
-        pid = self.fetch(self.pid_file)
+    def cancel_run(self, run_id: str) -> bool:
+        """ Kill the workflow process."""
+        if self.get_state(run_id) not in ("QUEUED", "INITIALIZING", "RUNNING"):
+            return False
+        self.set_state(run_id, "CANCELING")
 
-        if not pid:
-            # process was not created
+        pid = self.fetch(run_id, "pid")
+
+        if not pid:  # process was not created
             return False
 
         try:
@@ -186,52 +359,41 @@ class ToilWorkflow:
         except ProcessLookupError:
             return False
 
+        self.set_state(run_id, "CANCELED")
         return True
 
-    def fetch(self, filename: str, default_value: str = "") -> str:
-        """
-        Returns the contents of the given file. If the file does not exist, the
-        default value is returned.
-        """
-        if os.path.exists(filename):
-            with open(filename, "r") as f:
-                return f.read()
-        return default_value
+    def get_run_log(self, run_id: str) -> Dict[str, Any]:
+        """ Get detailed info about a workflow run."""
+        state = self.get_state(run_id)
 
-    def get_log(self) -> Dict[str, Any]:
-        """
-        Get detailed information about a current workflow run.
-        """
-        state = self.get_state()
+        request = self.fetch_json(run_id, "request.json")
+        job_store = self.fetch(run_id, "job_store")
 
-        with open(self.request_json, "r") as f:
-            request = json.load(f)
-
-        with open(self.job_store_file, "r") as f:
-            self.job_store = f.read()
-
-        stderr = self.fetch(self.stderr_file)
-        exit_code = self.fetch(self.exit_code_file)
-        start_time = self.fetch(self.start_time)
-        end_time = self.fetch(self.end_time)
-        cmd = [self.fetch(self.cmd_file)]
+        stdout = self.fetch(run_id, "stdout")
+        stderr = self.fetch(run_id, "stderr")
+        exit_code = self.fetch(run_id, "exit_code")
+        start_time = self.fetch(run_id, "starttime")
+        end_time = self.fetch(run_id, "endtime")
+        cmd = self.fetch(run_id, "cmd", "").split("\n")
 
         output_obj = {}
         if state == "COMPLETE":
+            out_dir = self._join_work_dir(run_id, "out_dir")
+
             # only tested locally
-            if self.job_store.startswith("file:"):
-                for file in os.listdir(self.out_dir):
+            if job_store.startswith("file:"):
+                for file in os.listdir(out_dir):
                     if file.startswith("out_tmpdir"):
-                        shutil.rmtree(os.path.join(self.out_dir, file))
-                for file in os.listdir(self.out_dir):
+                        shutil.rmtree(os.path.join(out_dir, file))
+                for file in os.listdir(out_dir):
                     output_obj[file] = {
-                        "location": os.path.join(self.out_dir, file),
-                        "size": os.stat(os.path.join(self.out_dir, file)).st_size,
+                        "location": os.path.join(out_dir, file),
+                        "size": os.stat(os.path.join(out_dir, file)).st_size,
                         "class": "File",
                     }
 
         return {
-            "run_id": self.run_id,
+            "run_id": run_id,
             "request": request,
             "state": state,
             "run_log": {
@@ -239,117 +401,13 @@ class ToilWorkflow:
                 "start_time": start_time,
                 "end_time": end_time,
                 # TODO: stdout and stderr should be a URL that points to the output file, not the actual contents.
-                "stdout": "",
+                "stdout": stdout,
                 "stderr": stderr,
-                "exit_code": int(exit_code) if exit_code != "" else "",
+                "exit_code": int(exit_code) if exit_code is not None else None,
             },
             "task_logs": [],
             "outputs": output_obj,
         }
-
-    def run(self, request: Dict[str, Any], temp_dir: str, opts: DefaultOptions) -> Dict[str, str]:
-        """
-        Constructs a command to run a cwl/json from requests and opts, runs it,
-        and deposits the outputs in outdir.
-
-        Runner:
-            opts.get_option("runner", default="cwl-runner")
-
-        CWL (url):
-            request["workflow_url"] == a url to a cwl file
-        or
-            request["workflow_attachment"] == input cwl text (written to a file and a url constructed for that file)
-
-        JSON File:
-            request["workflow_params"] == input json text (to be written to a file)
-
-        :param dict request: A dictionary containing the cwl/json information.
-        :param str temp_dir: Folder where input files have been staged and the
-                            cwd to run at.
-        :param DefaultOptions opts: contains the user's arguments; specifically
-                                    the runner and runner options.
-
-        :return: {"run_id": self.run_id, "state": state}
-        """
-        wf_type = request["workflow_type"].lower().strip()
-        version = request["workflow_type_version"]
-
-        if version != "v1.0" and wf_type == "cwl":
-            raise RuntimeError(
-                'workflow_type "cwl" requires '
-                '"workflow_type_version" to be "v1.0": ' + str(version)
-            )
-        if version != "2.7" and wf_type == "py":
-            raise RuntimeError(
-                'workflow_type "py" requires '
-                '"workflow_type_version" to be "2.7": ' + str(version)
-            )
-
-        logger.info("Beginning Toil Workflow ID: " + str(self.run_id))
-
-        with open(self.start_time, "w") as f:
-            f.write(get_iso_time())
-        with open(self.request_json, "w") as f:
-            json.dump(request, f)
-        with open(self.input_json, "w") as temp:
-            json.dump(request["workflow_params"], temp)
-
-        command_args = self.write_workflow(request, opts, temp_dir, wf_type=wf_type)
-        exit_code = self.call_cmd(command_args, temp_dir)
-
-        with open(self.end_time, "w") as f:
-            f.write(get_iso_time())
-        with open(self.exit_code_file, "w") as f:
-            f.write(str(exit_code))
-
-        if exit_code == 0:
-            open(self.stat_complete_file, "a").close()
-        else:
-            # non-zero exit code indicates failure
-            open(self.stat_error_file, "a").close()
-
-        return self.get_status()
-
-    def get_state(self) -> str:
-        """
-        Get the state of the current workflow run. Can be one of the following:
-            QUEUED,
-            INITIALIZING,
-            RUNNING,
-            COMPLETE,
-            or
-            EXECUTOR_ERROR.
-        """
-        # the job store never existed
-        if not os.path.exists(self.job_store_file):
-            logger.info("Workflow " + self.run_id + ": QUEUED")
-            return "QUEUED"
-
-        # errored earlier
-        if os.path.exists(self.stat_error_file):
-            logger.info("Workflow " + self.run_id + ": EXECUTOR_ERROR")
-            return "EXECUTOR_ERROR"
-
-        # completed earlier
-        if os.path.exists(self.stat_complete_file):
-            logger.info("Workflow " + self.run_id + ": COMPLETE")
-            return "COMPLETE"
-
-        # the workflow is staged but has not run yet
-        if not os.path.exists(self.stderr_file):
-            logger.info("Workflow " + self.run_id + ": INITIALIZING")
-            return "INITIALIZING"
-
-        # TODO: Query with "toil status"?
-
-        logger.info("Workflow " + self.run_id + ": RUNNING")
-        return "RUNNING"
-
-    def get_status(self) -> Dict[str, str]:
-        """
-        Get the status of the workflow run as a dict.
-        """
-        return {"run_id": self.run_id, "state": self.get_state()}
 
 
 class ToilBackend(WESBackend):
@@ -359,26 +417,18 @@ class ToilBackend(WESBackend):
 
     def __init__(self, opts: List[str]) -> None:
         super(ToilBackend, self).__init__(opts)
-        self.work_dir: str = os.path.join(os.getcwd(), "workflows")
         self.processes: Dict[str, "Process"] = {}
-
-    def assert_exists(self, run_id: str) -> None:
-        """
-        Raises an error if the given workflow run does not exist.
-        """
-        if not os.path.isdir(os.path.join(self.work_dir, run_id)):
-            raise WorkflowNotFoundError
+        self.executor = ToilWorkflowExecutor()
 
     @handle_errors
     def get_service_info(self) -> Dict[str, Any]:
-        """
-        Get information about Workflow Execution Service.
-        """
+        """ Get information about Workflow Execution Service."""
+
         return {
             "workflow_type_versions": {
-                "PY": {"workflow_type_version": ["3.6", "3.7", "3.8", "3.9"]},
-                "CWL": {"workflow_type_version": ["v1.0", "v1.1", "v1.2"]},
-                "WDL": {"workflow_type_version": ["draft-2", "1.0"]},
+                k: {
+                    "workflow_type_version": v.supported_versions()
+                } for k, v in self.executor.workflow_types.items()
             },
             "supported_wes_versions": ["1.0.0"],
             "supported_filesystem_protocols": ["file", "http", "https"],
@@ -389,53 +439,53 @@ class ToilBackend(WESBackend):
 
     @handle_errors
     def list_runs(self, page_size: Optional[int] = None, page_token: Optional[str] = None) -> Dict[str, Any]:
-        """
-        List the workflow runs.
-        """
-        # FIXME: results don't page
+        """ List the workflow runs."""
+        # TODO: implement pagination
+        workflows = [{"run_id": run_id, "state": state}
+                     for run_id, state in self.executor.get_runs()]
 
-        if not os.path.exists(self.work_dir):
-            return {"workflows": [], "next_page_token": ""}
-
-        wf = []
-        for entry in os.listdir(self.work_dir):
-            if os.path.isdir(os.path.join(self.work_dir, entry)):
-                wf.append(ToilWorkflow(entry))
-
-        workflows = [{"run_id": w.run_id, "state": w.get_state()} for w in wf]
         return {"workflows": workflows, "next_page_token": ""}
 
     @handle_errors
     def run_workflow(self) -> Dict[str, str]:
-        """
-        Run a workflow.
-        """
+        """ Run a workflow."""
+        run_id = uuid.uuid4().hex
+
+        # create necessary files for the run
+        self.executor.set_up_run(run_id)
+
+        # collect user uploaded files and configurations from the body of the request
         temp_dir, body = self.collect_attachments()
 
-        run_id = uuid.uuid4().hex
-        job = ToilWorkflow(run_id)
-        p = Process(target=job.run, args=(body, temp_dir, self.opts))
+        try:
+            workflow = self.executor.create_workflow(run_id,
+                                                     temp_dir=temp_dir,
+                                                     request=body,
+                                                     options=self.opts)
+        except:
+            # let users know that their request is invalid
+            self.executor.set_state(run_id, "SYSTEM_ERROR")
+            raise
+
+        p = Process(target=self.executor.run_workflow, args=(workflow, ))
         p.start()
         self.processes[run_id] = p
+
         return {"run_id": run_id}
 
     @handle_errors
     def get_run_log(self, run_id: str) -> Dict[str, Any]:
-        """
-        Get detailed info about a workflow run.
-        """
-        self.assert_exists(run_id)
-        return ToilWorkflow(run_id).get_log()
+        """ Get detailed info about a workflow run."""
+        self.executor.assert_exists(run_id)
+        return self.executor.get_run_log(run_id)
 
     @handle_errors
     def cancel_run(self, run_id: str) -> Dict[str, str]:
-        """
-        Cancel a running workflow.
-        """
-        self.assert_exists(run_id)
+        """ Cancel a running workflow."""
+        self.executor.assert_exists(run_id)
 
         # terminate the actual process that runs our command
-        status = ToilWorkflow(run_id).cancel()
+        status = self.executor.cancel_run(run_id)
 
         if run_id in self.processes:
             # should this block with `p.is_alive()`?
@@ -443,7 +493,6 @@ class ToilBackend(WESBackend):
 
         if status:
             return {"run_id": run_id}
-
         raise RuntimeError("Failed to cancel run.  Workflow is likely canceled.")
 
     @handle_errors
@@ -452,5 +501,5 @@ class ToilBackend(WESBackend):
         Get quick status info about a workflow run, returning a simple result
         with the overall state of the workflow run.
         """
-        self.assert_exists(run_id)
-        return ToilWorkflow(run_id).get_status()
+        self.executor.assert_exists(run_id)
+        return {"run_id": run_id, "state": self.executor.get_state(run_id)}
