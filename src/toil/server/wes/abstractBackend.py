@@ -1,43 +1,13 @@
-import tempfile
 import json
 import os
 import logging
 from abc import abstractmethod, ABC
-from typing import Optional, List, Tuple, Dict, Any
+from typing import Optional, List, Dict, Any
 
 import connexion  # type: ignore
 from werkzeug.utils import secure_filename
 
-
-class DefaultOptions:
-    """
-    Stores and retrieves options.
-    """
-    def __init__(self, opts: List[str]):
-        """Parse and store options as a list of tuples."""
-        self.pairs = []
-        for o in opts if opts else []:
-            k, v = o.split("=", 1)
-            self.pairs.append((k, v))
-
-    def get_option(self, p: str, default: Optional[str] = None) -> Optional[str]:
-        """
-        Returns the first option value stored that matches p or default.
-        """
-        for k, v in self.pairs:
-            if k == p:
-                return v
-        return default
-
-    def get_options(self, p: str) -> List[str]:
-        """
-        Returns all option values stored that match p as a list.
-        """
-        opt_list = []
-        for k, v in self.pairs:
-            if k == p:
-                opt_list.append(v)
-        return opt_list
+from toil.server.utils import DefaultOptions
 
 
 class WESBackend(ABC):
@@ -130,15 +100,18 @@ class WESBackend(ABC):
         else:
             logging.info(message)
 
-    def collect_attachments(self, run_id: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
+    def collect_attachments(self,
+                            run_id: Optional[str] = None,
+                            temp_dir: Optional[str] = None) -> Dict[str, Any]:
         """
-        Collect the attachments that are provided along with the request.
+        Collect the attachments of the current request by staging uploaded
+        files to the temp_dir.
 
-        :returns: The temporary directory where uploaded files are staged, and
-                  a dictionary of input parameters provided by the user.
+        :param run_id: The run ID for logging.
+        :param temp_dir: The directory where uploaded files should be staged.
+        :returns: A dictionary of input parameters provided by the user.
         """
-        # TODO: make sure this is cleaned up
-        temp_dir = tempfile.mkdtemp()
+
         body = {}
         has_attachments = False
         for key, ls in connexion.request.files.lists():
@@ -198,4 +171,4 @@ class WESBackend(ABC):
         if "workflow_params" not in body:
             raise ValueError("Missing 'workflow_params' in submission")
 
-        return temp_dir, body
+        return body

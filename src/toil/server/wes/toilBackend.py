@@ -8,157 +8,14 @@ import uuid
 from multiprocessing import Process
 from typing import Optional, List, Dict, Any, Generator, Tuple, Union
 
-from toil.server.wes.abstractBackend import WESBackend, DefaultOptions
-from toil.server.wes.utils import handle_errors, WorkflowNotFoundError, get_iso_time
+from toil.server.models.workflow import PythonWorkflow, CWLWorkflow, WDLWorkflow, WESWorkflow
+from toil.server.wes.abstractBackend import WESBackend
+from toil.server.utils import handle_errors, WorkflowNotFoundError, get_iso_time, DefaultOptions
 from toil.version import baseVersion
 
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
-
-
-class WESWorkflow:
-    """
-    Represents a single WES workflow of a particular workflow type. This class
-    is responsible for sorting out input arguments and constructing a shell
-    command for the given workflow to run.
-    """
-    def __init__(self, run_id: str, version: str, workflow_url: str,  input_json: str,
-                 options: List[str], temp_dir: str, out_dir: str) -> None:
-        """
-        :param run_id: The run id.
-        :param version: The version of the workflow type provided by the user.
-
-        :param workflow_url: The URL to the workflow file.
-        :param input_json: The URL to the input JSON file.
-        :param options: A list of user defined options that should be appended
-                        to the shell command run.
-        :param temp_dir: The temporary directory where attachments are staged
-                         and the workflow should be executed.
-        :param out_dir: The output directory where we expect workflow outputs
-                        to be.
-        """
-        if version not in self.supported_versions():
-            raise ValueError(f"Unsupported workflow version '{version}' for {self.__class__.__name__}.")
-        self.version = version
-        self.run_id = run_id
-        self.cloud = False
-
-        self.workflow_url = workflow_url
-        self.input_json = input_json
-        self.options = options
-
-        self.temp_dir = temp_dir
-        self.out_dir = out_dir
-
-        default_job_store = "file:" + os.path.join(temp_dir, "toiljobstore")
-        self.job_store: str = default_job_store
-
-    @classmethod
-    def supported_versions(cls) -> List[str]:
-        """
-        Get all the workflow versions that this runner implementation supports.
-        """
-        raise NotImplementedError
-
-    def prepare(self) -> None:
-        """ Prepare the workflow run."""
-        self.link_files()
-        self.sort_options()
-
-    @staticmethod
-    def _link_file(src: str, dest: str) -> None:
-        try:
-            os.link(src, dest)
-        except OSError:
-            os.symlink(src, dest)
-
-    def link_files(self) -> None:
-        """Link the workflow and its JSON input file to the self.temp_dir."""
-
-        # link the workflow file into the cwd
-        if self.workflow_url.startswith("file://"):
-            dest = os.path.join(self.temp_dir, "wes_workflow" + os.path.splitext(self.workflow_url)[1])
-            self._link_file(src=self.workflow_url[7:], dest=dest)
-            self.workflow_url = dest
-
-        # link the JSON file into the cwd
-        dest = os.path.join(self.temp_dir, "wes_input.json")
-        self._link_file(src=self.input_json, dest=dest)
-        self.input_json = dest
-
-    def sort_options(self) -> None:
-        """
-        Given the user request, sort the command line arguments in the order
-        that can be recognized by the runner.
-        """
-        # determine job store and set a new default if the user did not set one
-        for opt in self.options:
-            if opt.startswith("--jobStore="):
-                self.job_store = opt[11:]
-                if self.job_store.startswith(("aws", "google", "azure")):
-                    self.cloud = True
-                self.options.remove(opt)
-            if opt.startswith(("--outdir=", "-o=")):
-                # remove user-defined output directories
-                self.options.remove(opt)
-
-    def construct_command(self) -> List[str]:
-        """
-        Return a list of shell commands that should be executed in order to
-        complete this workflow run.
-        """
-        raise NotImplementedError
-
-
-class PythonWorkflow(WESWorkflow):
-    """ Toil workflows."""
-
-    @classmethod
-    def supported_versions(cls) -> List[str]:
-        return ["3.6", "3.7", "3.8", "3.9"]
-
-    def sort_options(self) -> None:
-        super(PythonWorkflow, self).sort_options()
-
-        if not self.cloud:
-            # TODO: find a way to communicate the out_dir to the Toil workflow
-            pass
-
-        # append the positional jobStore argument at the end for Toil workflows
-        self.options.append(self.job_store)
-
-    def construct_command(self) -> List[str]:
-        return ["python"] + [self.workflow_url] + self.options
-
-
-class CWLWorkflow(WESWorkflow):
-    """ CWL workflows that are run with toil-cwl-runner."""
-
-    @classmethod
-    def supported_versions(cls) -> List[str]:
-        return ["v1.0", "v1.1", "v1.2"]
-
-    def sort_options(self) -> None:
-        super(CWLWorkflow, self).sort_options()
-
-        if not self.cloud:
-            self.options.append("--outdir=" + self.out_dir)
-        self.options.append("--jobStore=" + self.job_store)
-
-    def construct_command(self) -> List[str]:
-        return ["toil-cwl-runner"] + self.options + [self.workflow_url, self.input_json]
-
-
-class WDLWorkflow(CWLWorkflow):
-    """ WDL workflows that are run with toil-wdl-runner."""
-
-    @classmethod
-    def supported_versions(cls) -> List[str]:
-        return ["draft-2", "1.0"]
-
-    def construct_command(self) -> List[str]:
-        return ["toil-wdl-runner"] + self.options + [self.workflow_url, self.input_json]
 
 
 class ToilWorkflowExecutor:
@@ -238,10 +95,13 @@ class ToilWorkflowExecutor:
             if os.path.isdir(self._join_work_dir(run_id)):
                 yield run_id, self.get_state(run_id)
 
-    def set_up_run(self, run_id: str) -> None:
+    def set_up_run(self, run_id: str) -> str:
         """
         Calls when a new workflow run has been requested. This creates the
         necessary files needed for this workflow to run.
+
+        :returns: Returns the directory where attachments are staged and the
+                  workflow should be executed.
         """
         # make directory for the run
         out_dir = self._join_work_dir(run_id, "out_dir")
@@ -249,6 +109,7 @@ class ToilWorkflowExecutor:
             os.makedirs(out_dir)
 
         self.set_state(run_id, "QUEUED")
+        return self._join_work_dir(run_id, "run_dir")
 
     def create_workflow(self,
                         run_id: str,
@@ -291,20 +152,17 @@ class ToilWorkflowExecutor:
 
         # create an instance of the workflow
         return wf(run_id=run_id,
-                  version=version,
+                  work_dir=self._join_work_dir(run_id),
                   workflow_url=request["workflow_url"],
                   input_json=self._join_work_dir(run_id, "wes_input.json"),
-                  options=options,
-                  temp_dir=temp_dir,
-                  out_dir=self._join_work_dir(run_id, "out_dir"))
+                  options=options)
 
     def run_workflow(self, workflow: WESWorkflow) -> None:
         """ Runs the workflow in a separate multiprocessing Process."""
         run_id = workflow.run_id
         temp_dir = workflow.temp_dir
 
-        # prepare the run
-        workflow.prepare()
+        workflow.prepare_run()
         # store the jobStore location so we can access the output files later
         self.write(run_id, "job_store", workflow.job_store)
 
@@ -452,19 +310,19 @@ class ToilBackend(WESBackend):
         run_id = uuid.uuid4().hex
 
         # create necessary files for the run
-        self.executor.set_up_run(run_id)
+        run_dir = self.executor.set_up_run(run_id)
 
         # collect user uploaded files and configurations from the body of the request
-        temp_dir, body = self.collect_attachments()
+        body = self.collect_attachments(run_id, temp_dir=run_dir)
 
         try:
             workflow = self.executor.create_workflow(run_id,
-                                                     temp_dir=temp_dir,
+                                                     temp_dir=run_dir,
                                                      request=body,
                                                      options=self.opts)
         except:
             # let users know that their request is invalid
-            self.executor.set_state(run_id, "SYSTEM_ERROR")
+            self.executor.set_state(run_id, "EXECUTOR_ERROR")
             raise
 
         p = Process(target=self.executor.run_workflow, args=(workflow, ))
