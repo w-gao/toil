@@ -1,5 +1,4 @@
 import os
-from abc import abstractmethod
 from typing import List
 
 
@@ -31,7 +30,7 @@ class WESWorkflow:
         self.input_json = input_json
         self.options = options
 
-        self.temp_dir = os.path.join(work_dir, "run_dir")
+        self.run_dir = os.path.join(work_dir, "run_dir")
         self.out_dir = os.path.join(work_dir, "out_dir")
 
         default_job_store = "file:" + os.path.join(work_dir, "toiljobstore")
@@ -58,17 +57,17 @@ class WESWorkflow:
 
     def link_files(self) -> None:
         """
-        Link the workflow and its JSON input file to the self.temp_dir.
+        Link the workflow and its JSON input file to self.run_dir.
         """
 
         # link the workflow file into the cwd
         if self.workflow_url.startswith("file://"):
-            dest = os.path.join(self.temp_dir, "wes_workflow" + os.path.splitext(self.workflow_url)[1])
+            dest = os.path.join(self.run_dir, "wes_workflow" + os.path.splitext(self.workflow_url)[1])
             self._link_file(src=self.workflow_url[7:], dest=dest)
             self.workflow_url = dest
 
         # link the JSON file into the cwd
-        dest = os.path.join(self.temp_dir, "wes_input.json")
+        dest = os.path.join(self.run_dir, "wes_input.json")
         self._link_file(src=self.input_json, dest=dest)
         self.input_json = dest
 
@@ -91,7 +90,6 @@ class WESWorkflow:
 
         self._sort_options()
 
-    @abstractmethod
     def _sort_options(self) -> None:
         raise NotImplementedError
 

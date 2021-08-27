@@ -100,9 +100,7 @@ class WESBackend(ABC):
         else:
             logging.info(message)
 
-    def collect_attachments(self,
-                            run_id: Optional[str] = None,
-                            temp_dir: Optional[str] = None) -> Dict[str, Any]:
+    def collect_attachments(self, run_id: str, temp_dir: str) -> Dict[str, Any]:
         """
         Collect the attachments of the current request by staging uploaded
         files to the temp_dir.
@@ -119,7 +117,6 @@ class WESBackend(ABC):
                 for value in ls:
                     # uploaded files that are required to execute the workflow
                     if key == "workflow_attachment":
-
                         # guard against maliciously constructed filenames
                         sp = value.filename.split("/")
                         fn = []
@@ -160,10 +157,11 @@ class WESBackend(ABC):
             if ":" not in body["workflow_url"]:
                 if not has_attachments:
                     raise ValueError("Relative 'workflow_url' but missing 'workflow_attachment'")
-
-                body["workflow_url"] = "file://%s" % os.path.join(
-                    temp_dir, secure_filename(body["workflow_url"])
-                )
+                fn = []
+                for p in body["workflow_url"].split("/"):
+                    if p not in ("", ".", ".."):
+                        fn.append(secure_filename(p))
+                body["workflow_url"] = "file://%s" % os.path.join(temp_dir, *fn)
             self.log_for_run(run_id, "Using workflow_url '%s'" % body.get("workflow_url"))
         else:
             raise ValueError("Missing 'workflow_url' in submission")

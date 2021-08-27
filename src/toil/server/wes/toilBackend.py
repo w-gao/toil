@@ -50,23 +50,10 @@ class ToilWorkflowExecutor:
                 return f.read()
         return default
 
-    def fetch_json(self, run_id: str, filename: str, default: Optional[Any] = None) -> Optional[Any]:
-        """ Returns the parsed JSON of the given file."""
-        path = self._join_work_dir(run_id, filename)
-        if os.path.exists(path):
-            with open(path, "r") as f:
-                return json.load(f)
-        return default
-
     def write(self, run_id: str, filename: str, content: str) -> None:
         """ Write a file to the directory of the given run."""
         with open(self._join_work_dir(run_id, filename), "w") as f:
             f.write(content)
-
-    def write_json(self, run_id: str, filename: str, contents: Any) -> None:
-        """ Write a JSON file to the directory of the given run."""
-        with open(self._join_work_dir(run_id, filename), "w") as f:
-            json.dump(contents, f)
 
     def assert_exists(self, run_id: str) -> None:
         """ Raises an error if the given workflow run does not exist."""
@@ -97,13 +84,12 @@ class ToilWorkflowExecutor:
 
     def set_up_run(self, run_id: str) -> str:
         """
-        Calls when a new workflow run has been requested. This creates the
-        necessary files needed for this workflow to run.
+        Calls when a new workflow run has been requested. This creates a
+        temporary directory for this workflow to run.
 
         :returns: Returns the directory where attachments are staged and the
                   workflow should be executed.
         """
-        # make directory for the run
         out_dir = self._join_work_dir(run_id, "out_dir")
         if not os.path.exists(out_dir):
             os.makedirs(out_dir)
@@ -111,22 +97,16 @@ class ToilWorkflowExecutor:
         self.set_state(run_id, "QUEUED")
         return self._join_work_dir(run_id, "run_dir")
 
-    def create_workflow(self,
-                        run_id: str,
-                        temp_dir: str,
-                        request: Dict[str, Any],
-                        options: DefaultOptions) -> WESWorkflow:
+    def create_workflow(self, run_id: str, request: Dict[str, Any], options: DefaultOptions) -> WESWorkflow:
         """
-                Creates a WESWorkflow object from the user request.
+        Creates a WESWorkflow object from the user request.
 
-                :param run_id: The run id.
-                :param temp_dir: The temporary directory where attachments are staged
-                                 and the workflow should be executed.
-                :param request: The request dictionary containing user input parameters
-                                for the workflow execution.
-                :param options: A list of default options that should be attached when
-                                starting the workflow.
-                """
+        :param run_id: The run id.
+        :param request: The request dictionary containing user input parameters
+                        for the workflow execution.
+        :param options: A list of default options that should be attached when
+                        starting the workflow.
+        """
         wf_type = request["workflow_type"].lower().strip()
         version = request["workflow_type_version"]
 
@@ -141,26 +121,26 @@ class ToilWorkflowExecutor:
         self.set_state(run_id, "INITIALIZING")
 
         self.write(run_id, "starttime", get_iso_time())
-        self.write_json(run_id, "request.json", request)
-        self.write_json(run_id, "wes_input.json", request["workflow_params"])
+        self.write(run_id, "request.json", json.dumps(request))
+        self.write(run_id, "wes_input.json", json.dumps(request["workflow_params"]))
 
         parameters = request.get("workflow_engine_parameters", None)
         if parameters:
             # TODO: user supplied options
             pass
-        options = options.get_options("extra")
+        opts = options.get_options("extra")
 
         # create an instance of the workflow
         return wf(run_id=run_id,
                   work_dir=self._join_work_dir(run_id),
                   workflow_url=request["workflow_url"],
                   input_json=self._join_work_dir(run_id, "wes_input.json"),
-                  options=options)
+                  options=opts)
 
     def run_workflow(self, workflow: WESWorkflow) -> None:
         """ Runs the workflow in a separate multiprocessing Process."""
         run_id = workflow.run_id
-        temp_dir = workflow.temp_dir
+        run_dir = workflow.run_dir
 
         workflow.prepare_run()
         # store the jobStore location so we can access the output files later
@@ -170,7 +150,7 @@ class ToilWorkflowExecutor:
 
         exit_code = self.call_cmd(run_id=run_id,
                                   cmd=workflow.construct_command(),
-                                  cwd=temp_dir)
+                                  cwd=run_dir)
 
         self.write(run_id, "endtime", get_iso_time())
         self.write(run_id, "exit_code", str(exit_code))
@@ -224,15 +204,15 @@ class ToilWorkflowExecutor:
         """ Get detailed info about a workflow run."""
         state = self.get_state(run_id)
 
-        request = self.fetch_json(run_id, "request.json")
-        job_store = self.fetch(run_id, "job_store")
+        request = json.loads(self.fetch(run_id, "request.json") or "{}")
+        job_store = self.fetch(run_id, "job_store") or ""
 
         stdout = self.fetch(run_id, "stdout")
         stderr = self.fetch(run_id, "stderr")
         exit_code = self.fetch(run_id, "exit_code")
         start_time = self.fetch(run_id, "starttime")
         end_time = self.fetch(run_id, "endtime")
-        cmd = self.fetch(run_id, "cmd", "").split("\n")
+        cmd = (self.fetch(run_id, "cmd") or "").split("\n")
 
         output_obj = {}
         if state == "COMPLETE":
@@ -309,17 +289,14 @@ class ToilBackend(WESBackend):
         """ Run a workflow."""
         run_id = uuid.uuid4().hex
 
-        # create necessary files for the run
+        # create the execution directory for the run
         run_dir = self.executor.set_up_run(run_id)
 
         # collect user uploaded files and configurations from the body of the request
         body = self.collect_attachments(run_id, temp_dir=run_dir)
 
         try:
-            workflow = self.executor.create_workflow(run_id,
-                                                     temp_dir=run_dir,
-                                                     request=body,
-                                                     options=self.opts)
+            workflow = self.executor.create_workflow(run_id, request=body, options=self.opts)
         except:
             # let users know that their request is invalid
             self.executor.set_state(run_id, "EXECUTOR_ERROR")
