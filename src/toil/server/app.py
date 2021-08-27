@@ -16,12 +16,14 @@ import connexion  # type: ignore
 from flask_cors import CORS  # type: ignore
 
 from toil.server.wes.toilBackend import ToilBackend
+from toil.server.wsgi import GunicornApplication
 
 
-def start_dev_server(args: argparse.Namespace) -> None:
+def start_server(args: argparse.Namespace) -> None:
     """
-    Start a development server.
+    Start a Toil server.
     """
+
     flask_app = connexion.FlaskApp(__name__,
                                    specification_dir='ga4gh_api_spec/',
                                    options={"swagger_ui": args.swagger_ui})
@@ -35,4 +37,11 @@ def start_dev_server(args: argparse.Namespace) -> None:
     flask_app.add_api('workflow_execution_service.swagger.yaml',
                 resolver=connexion.Resolver(backend.resolve_operation_id))  # noqa
 
-    flask_app.run(port=args.port)
+    if args.debug:
+        flask_app.run(port=args.port)
+    else:
+        # start a production WSGI server with gunicorn
+        GunicornApplication(flask_app.app, options={
+            "bind": f"127.0.0.1:{args.port}",
+            "workers": 9,
+        }).run()

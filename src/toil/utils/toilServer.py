@@ -15,7 +15,7 @@
 import argparse
 import logging
 
-from toil.server.app import start_dev_server
+from toil.server.app import start_server
 from toil.version import version
 
 logger = logging.getLogger(__name__)
@@ -33,7 +33,4 @@ def main() -> None:
                              "or '--opt extra=--workDir=/'.  Accepts multiple values.")
     args = parser.parse_args()
 
-    if args.debug:
-        start_dev_server(args)
-    else:
-        raise NotImplementedError("production WSGI server not tested yet.")
+    start_server(args)

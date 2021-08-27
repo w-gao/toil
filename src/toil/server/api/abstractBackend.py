@@ -8,7 +8,7 @@ from typing import Optional, List, Dict, Any
 import connexion  # type: ignore
 from werkzeug.utils import secure_filename
 
-from toil.server.utils import DefaultOptions
+from toil.server.api.utils import DefaultOptions
 
 
 class WESBackend:
