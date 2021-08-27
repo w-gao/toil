@@ -1,7 +1,8 @@
+# Modified from: https://github.com/common-workflow-language/workflow-service
 import json
 import os
 import logging
-from abc import abstractmethod, ABC
+from abc import abstractmethod
 from typing import Optional, List, Dict, Any
 
 import connexion  # type: ignore
@@ -10,7 +11,7 @@ from werkzeug.utils import secure_filename
 from toil.server.utils import DefaultOptions
 
 
-class WESBackend(ABC):
+class WESBackend:
     """
     Represents a workflow execution service (WES) API backend. Intended to be
     inherited. Subclasses should implement all abstract methods to handle user

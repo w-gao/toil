@@ -6,13 +6,12 @@ import signal
 import subprocess
 import uuid
 from multiprocessing import Process
-from typing import Optional, List, Dict, Any, Generator, Tuple, Union
+from typing import Optional, List, Dict, Any, Generator, Tuple, Union, Type
 
-from toil.server.models.workflow import PythonWorkflow, CWLWorkflow, WDLWorkflow, WESWorkflow
-from toil.server.wes.abstractBackend import WESBackend
+from toil.server.api.abstractBackend import WESBackend
+from toil.server.wes.models import PythonWorkflow, CWLWorkflow, WDLWorkflow, WESWorkflow
 from toil.server.utils import handle_errors, WorkflowNotFoundError, get_iso_time, DefaultOptions
 from toil.version import baseVersion
-
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -29,14 +28,19 @@ class ToilWorkflowExecutor:
 
     def __init__(self) -> None:
         self.work_dir = os.path.join(os.getcwd(), "workflows")
-        self.workflow_types = {
-            'py': PythonWorkflow,
-            'cwl': CWLWorkflow,
-            'wdl': WDLWorkflow
-        }
+        self.workflow_types: Dict[str, Type[WESWorkflow]] = {}
+
+    def register_workflow_type(self, name: str, workflow: Type[WESWorkflow]) -> None:
+        """
+        Register a workflow type that can be run with this executor.
+        """
+        self.workflow_types[name.lower()] = workflow
 
     def _join_work_dir(self, run_id: str, *args: str) -> str:
-        """ Returns the full path to the given file of a run."""
+        """
+        Returns the full path to the given file located under the the run_id
+        workflow directory.
+        """
         return os.path.join(self.work_dir, run_id, *args)
 
     def fetch(self, run_id: str, filename: str, default: Optional[str] = None) -> Optional[str]:
@@ -44,37 +48,41 @@ class ToilWorkflowExecutor:
         Returns the contents of the given file. If the file does not exist, the
         default value is returned.
         """
-        path = self._join_work_dir(run_id, filename)
-        if os.path.exists(path):
-            with open(path, "r") as f:
+        if os.path.exists(self._join_work_dir(run_id, filename)):
+            with open(self._join_work_dir(run_id, filename), "r") as f:
                 return f.read()
         return default
 
     def write(self, run_id: str, filename: str, content: str) -> None:
-        """ Write a file to the directory of the given run."""
+        """
+        Write a file to the directory of the given run.
+        """
         with open(self._join_work_dir(run_id, filename), "w") as f:
             f.write(content)
 
-    def assert_exists(self, run_id: str) -> None:
-        """ Raises an error if the given workflow run does not exist."""
-        if not os.path.isdir(self._join_work_dir(run_id)):
-            raise WorkflowNotFoundError
+    def exists(self, run_id: str) -> bool:
+        """
+        Returns True if the workflow run exists.
+        """
+        return os.path.isdir(self._join_work_dir(run_id))
 
     def get_state(self, run_id: str) -> str:
-        """ Returns the state of the given run."""
+        """
+        Returns the state of the given run.
+        """
         return self.fetch(run_id, "state") or "UNKNOWN"
 
     def set_state(self, run_id: str, state: str) -> None:
-        """ Set the state for a run."""
-        if state not in ("QUEUED", "INITIALIZING", "RUNNING", "COMPLETE", "EXECUTOR_ERROR", "SYSTEM_ERROR",
-                         "CANCELED", "CANCELING"):
-            raise ValueError(f"Invalid state for run: {state}")
-
+        """
+        Set the state for a run.
+        """
         logger.info(f"Workflow {run_id}: {state}")
         self.write(run_id, "state", state)
 
     def get_runs(self) -> Generator[Tuple[str, str], None, None]:
-        """ A generator of a list of run ids and their state."""
+        """
+        A generator of a list of run ids and their state.
+        """
         if not os.path.exists(self.work_dir):
             return
 
@@ -204,6 +212,7 @@ class ToilWorkflowExecutor:
         """ Get detailed info about a workflow run."""
         state = self.get_state(run_id)
 
+        # TODO: move this to ToilBackend
         request = json.loads(self.fetch(run_id, "request.json") or "{}")
         job_store = self.fetch(run_id, "job_store") or ""
 
@@ -258,6 +267,10 @@ class ToilBackend(WESBackend):
         self.processes: Dict[str, "Process"] = {}
         self.executor = ToilWorkflowExecutor()
 
+        self.executor.register_workflow_type("py", PythonWorkflow)
+        self.executor.register_workflow_type("cwl", CWLWorkflow)
+        self.executor.register_workflow_type("wdl", WDLWorkflow)
+
     @handle_errors
     def get_service_info(self) -> Dict[str, Any]:
         """ Get information about Workflow Execution Service."""
@@ -289,6 +302,7 @@ class ToilBackend(WESBackend):
         """ Run a workflow."""
         run_id = uuid.uuid4().hex
 
+        # TODO: refine logic
         # create the execution directory for the run
         run_dir = self.executor.set_up_run(run_id)
 
@@ -302,7 +316,7 @@ class ToilBackend(WESBackend):
             self.executor.set_state(run_id, "EXECUTOR_ERROR")
             raise
 
-        p = Process(target=self.executor.run_workflow, args=(workflow, ))
+        p = Process(target=self.executor.run_workflow, args=(workflow,))
         p.start()
         self.processes[run_id] = p
 
@@ -311,13 +325,16 @@ class ToilBackend(WESBackend):
     @handle_errors
     def get_run_log(self, run_id: str) -> Dict[str, Any]:
         """ Get detailed info about a workflow run."""
-        self.executor.assert_exists(run_id)
+        if not self.executor.exists(run_id):
+            raise WorkflowNotFoundError
+
         return self.executor.get_run_log(run_id)
 
     @handle_errors
     def cancel_run(self, run_id: str) -> Dict[str, str]:
         """ Cancel a running workflow."""
-        self.executor.assert_exists(run_id)
+        if not self.executor.exists(run_id):
+            raise WorkflowNotFoundError
 
         # terminate the actual process that runs our command
         status = self.executor.cancel_run(run_id)
@@ -326,9 +343,12 @@ class ToilBackend(WESBackend):
             # should this block with `p.is_alive()`?
             self.processes[run_id].terminate()
 
-        if status:
-            return {"run_id": run_id}
-        raise RuntimeError("Failed to cancel run.  Workflow is likely canceled.")
+        if not status:
+            raise RuntimeError("Failed to cancel run.  Workflow is likely canceled.")
+
+        return {
+            "run_id": run_id
+        }
 
     @handle_errors
     def get_run_status(self, run_id: str) -> Dict[str, str]:
@@ -336,5 +356,10 @@ class ToilBackend(WESBackend):
         Get quick status info about a workflow run, returning a simple result
         with the overall state of the workflow run.
         """
-        self.executor.assert_exists(run_id)
-        return {"run_id": run_id, "state": self.executor.get_state(run_id)}
+        if not self.executor.exists(run_id):
+            raise WorkflowNotFoundError
+
+        return {
+            "run_id": run_id,
+            "state": self.executor.get_state(run_id)
+        }

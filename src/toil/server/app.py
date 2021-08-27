@@ -20,13 +20,11 @@ from toil.server.wes.toilBackend import ToilBackend
 
 def start_dev_server(args: argparse.Namespace) -> None:
     """
-    Start a development WES server.
+    Start a development server.
     """
-
-    flask_app = connexion.FlaskApp(__name__, specification_dir='ga4gh_api_spec/',
-                                   options={
-                                       # "swagger_ui": False
-                                   })
+    flask_app = connexion.FlaskApp(__name__,
+                                   specification_dir='ga4gh_api_spec/',
+                                   options={"swagger_ui": args.swagger_ui})
 
     # enable cross origin resource sharing
     CORS(flask_app.app)

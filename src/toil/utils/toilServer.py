@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""CLI entry for the Toil WES server."""
+"""CLI entry for the Toil servers."""
 import argparse
 import logging
 
@@ -25,6 +25,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="The Toil Workflow Execution Service Server")
     parser.add_argument("--port", type=int, default=8080)
     parser.add_argument("--debug", action="store_true", default=False)
+    parser.add_argument("--swagger_ui", action="store_true", default=False)
+
     parser.add_argument("--version", action='version', version=version)
     parser.add_argument("--opt", "-o", type=str, action="append",
                         help="Example: '--opt runner=cwltoil --opt extra=--logLevel=CRITICAL' "
@@ -34,5 +36,4 @@ def main() -> None:
     if args.debug:
         start_dev_server(args)
     else:
-        # TODO: start a production WSGI server
-        start_dev_server(args)
+        raise NotImplementedError("production WSGI server not tested yet.")

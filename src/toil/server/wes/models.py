@@ -48,6 +48,10 @@ class WESWorkflow:
         self.link_files()
         self.sort_options()
 
+    def write_workflow(self, request, opts, cwd):
+        """
+        """
+
     @staticmethod
     def _link_file(src: str, dest: str) -> None:
         try:
