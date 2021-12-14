@@ -5,29 +5,27 @@ services:
   rabbitmq:
     image: rabbitmq:3.9.5
     hostname: rabbitmq
-    container_name: rabbitmq
-  celery-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: celery-worker
+    container_name: toil-wes-rabbitmq
+  celery:
+    image: ${TOIL_APPLIANCE_SELF}
+    container_name: toil-wes-celery
     volumes:
-      - /tmp/toil-workflows:/app/toil-workflows
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /tmp/toil-workflows:/root/toil-workflows
     command: celery --broker=amqp://guest:guest@rabbitmq:5672// -A toil.server.celery_app worker --loglevel=INFO
     depends_on:
       - rabbitmq
   wes-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: wes-server
+    image: ${TOIL_APPLIANCE_SELF}
+    container_name: toil-wes-server
+    working_dir: /root
     volumes:
-      - /tmp/toil-workflows:/app/toil-workflows
+      - /tmp/toil-workflows:/root/toil-workflows
     environment:
       - TOIL_WES_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
-    command: toil server --host 0.0.0.0
+    command: toil server --host 0.0.0.0 --port 8080
     ports:
       - "127.0.0.1:8080:8080"
     depends_on:
       - rabbitmq
-      - celery-worker
+      - celery

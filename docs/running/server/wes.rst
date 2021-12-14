@@ -57,6 +57,9 @@ Below is a detailed summary of all available options:
             The host interface that the Toil server binds on. (default: "127.0.0.1").
 --port PORT
             The port that the Toil server listens on. (default: 8080).
+--public_url PUBLIC_URL
+            The base URL to use for serving static files including the stdout and stderr logs of the workflows.
+            (default: "``http://{host}:{port}``").
 --swagger_ui
             Enable the swagger UI on the ``ga4gh/wes/v1/ui`` endpoint. (default: False).
 --cors
@@ -79,6 +82,8 @@ Below is a detailed summary of all available options:
 .. _GA4GH docs on CORS: https://w3id.org/ga4gh/product-approval-support/cors
 
 
+.. _WESRunWithDockerCompose:
+
 Running the Server with `docker-compose`
 ----------------------------------------
 
@@ -90,17 +95,17 @@ before starting the server.
 
 Also make sure to run it behind a firewall; it opens up the Toil server on port 8080 to anyone who connects.
 
-.. literalinclude:: ./Dockerfile
-   :language: yaml
-
 .. literalinclude:: ./docker-compose.yml
    :language: yaml
-   :emphasize-lines: 15,25,30
+   :emphasize-lines: 14,23,28
 
-Once everything is configured, simply run ``docker compose up`` to start the containers. Run ``docker compose down`` to
+Once everything is configured, simply run ``docker-compose up`` to start the containers. Run ``docker-compose down`` to
 stop and remove all containers.
 
-Note that this method only works if ``docker-compose`` is installed, which does not work on the Toil appliance.
+.. note::
+    ``docker-compose`` is not installed on the Toil appliance by default. See the following section to set up the WES
+    server on a Toil cluster.
+
 
 Running on a Toil cluster
 -------------------------
@@ -109,14 +114,28 @@ To run the server on a Toil leader instance on EC2:
 
 #. Launch a Toil cluster with the ``toil launch-cluster`` command with the AWS provisioner
 
-#. SSH into your cluster with the ``--sshOption=-L8080:localhost:8080`` option to forward port ``8080``
+#. SSH into your cluster with the ``--sshOption=-L8080:localhost:8080`` option to forward port ``8080`` to
+   ``localhost:8080``
 
-#. Set up Celery workers required to run WES workflows (:ref:`WESPrepareEnvironment`)
+#. Install Docker Compose by running the following commands from the `Docker docs`_::
 
-#. Now, you can run the WES server with ``toil server`` on the Toil appliance.
+        curl -L "https://github.com/docker/compose/releases/download/1.29.2/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+        chmod +x /usr/local/bin/docker-compose
 
-.. note::
-    To run the server in the background, run "``nohup toil server &``".
+        # check installation
+        docker-compose --version
+
+   or, install a different version of Docker Compose by changing ``"1.29.2"`` to another version.
+
+#. Copy the ``docker-compose.yml`` file from (:ref:`WESRunWithDockerCompose`) to an empty directory, and modify the
+   configuration as needed.
+
+#. Now, run ``docker-compose up -d`` to start the WES server in detach mode on the Toil appliance.
+
+#. To stop the server, run ``docker-compose down``.
+
+
+.. _Docker docs: https://docs.docker.com/compose/install/#install-compose
 
 
 .. _WESEndpointsOverview:
