@@ -179,7 +179,12 @@ class ToilWorkflowRunner:
 
         with open(stdout_f, "w") as stdout, open(stderr_f, "w") as stderr:
             logger.info(f"Calling: '{' '.join(cmd)}'")
-            process = subprocess.Popen(cmd, stdout=stdout, stderr=stderr, close_fds=True, cwd=cwd)
+            process = subprocess.Popen(cmd,
+                                       stdout=stdout,
+                                       stderr=stderr,
+                                       start_new_session=True,
+                                       close_fds=True,
+                                       cwd=cwd)
 
         return process
 
